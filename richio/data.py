@@ -242,19 +242,81 @@ class Snapshot:
         box_size: ArrayLike | None = None,
         unit_system: str = "cgs",
         selection: ArrayLike = None,
+        method: str = "nn",
     ):
         """
         Calculate a quantity, interpolate on grid, and integrate along z axis.
         To make use of the unit system, use either str keys or unyt_array data
         for `data`, `X`, `Y`, `Z`, `box_size`.
+
+        Parameters
+        ----------
+        method : {'nn', 'voronoi'}
+            'nn'      – nearest-neighbour interpolation on a 3-D grid then
+                        explicit z-integration (default, existing behaviour).
+            'voronoi' – analytical 2-D Voronoi projection: each cell's 3-D
+                        volume is distributed over the pixels it covers,
+                        weighted by the fraction of its 2-D Voronoi polygon
+                        (projected onto the XY plane) that overlaps each
+                        pixel.  Mass-conservative and free of the z-resolution
+                        artefacts of the NN method.
         """
-        grid_data, i, xspace, yspace, zspace = self.to_grid(data, res, 
-                X, Y, Z, box_size, selection)
+        if method == "nn":
+            grid_data, i, xspace, yspace, zspace = self.to_grid(data, res,
+                    X, Y, Z, box_size, selection)
+            dz = zspace[1:] - zspace[:-1]
+            projected_data = np.sum(grid_data[:-1, :-1, :-1] * dz, axis=-1).in_base(unit_system)
+            return projected_data, xspace, yspace
 
-        dz = zspace[1:] - zspace[:-1]                                                 #PM: dz = (z1 - z0) / (nz - 1)
-        projected_data = np.sum(grid_data[:-1, :-1, :-1] * dz, axis=-1).in_base(unit_system)#PM: grid_data[:, :, :-1]
+        elif method == "voronoi":
+            from richio.voronoi_viz import _voronoi_project
 
-        return projected_data, xspace, yspace
+            # --- data fetching (mirrors to_grid but also needs volume) ---
+            data_arr = self._get_data(data)
+            Xarr     = self._get_data(X)
+            Yarr     = self._get_data(Y)
+            vol_arr  = self._get_data("volume")
+
+            if selection is not None:
+                data_arr = data_arr[selection]
+                Xarr     = Xarr[selection]
+                Yarr     = Yarr[selection]
+                vol_arr  = vol_arr[selection]
+
+            # Resolution
+            try:
+                nx, ny = int(res[0]), int(res[1])
+            except TypeError:
+                nx = ny = int(res)
+
+            # Box size
+            if box_size is None:
+                x0, y0, z0, x1, y1, z1 = self.box
+            else:
+                if not isinstance(box_size, u.unyt_array):
+                    box_size = box_size * units.lscale
+                x0, y0, z0, x1, y1, z1 = box_size
+
+            # Convert to CGS scalars for the numba backend
+            x0f = float(x0.in_base("cgs").v);  x1f = float(x1.in_base("cgs").v)
+            y0f = float(y0.in_base("cgs").v);  y1f = float(y1.in_base("cgs").v)
+            Xf  = np.asarray(Xarr.in_base("cgs"),    dtype=np.float64)
+            Yf  = np.asarray(Yarr.in_base("cgs"),    dtype=np.float64)
+            df  = np.asarray(data_arr.in_base("cgs"), dtype=np.float64)
+            vf  = np.asarray(vol_arr.in_base("cgs"),  dtype=np.float64)
+
+            result_np = _voronoi_project(df, vf, Xf, Yf, x0f, x1f, y0f, y1f, nx, ny)
+
+            # Units: (data CGS unit) * cm³ / cm² = (data CGS unit) * cm
+            data_cgs_unit = data_arr.in_base("cgs").units
+            projected_data = (result_np * data_cgs_unit * u.cm).in_base(unit_system)
+
+            xspace = np.linspace(x0, x1, nx, endpoint=False)
+            yspace = np.linspace(y0, y1, ny, endpoint=False)
+            return projected_data, xspace, yspace
+
+        else:
+            raise ValueError(f"project: unknown method '{method}'. Use 'nn' or 'voronoi'.")
 
 
 
@@ -323,11 +385,11 @@ class Snapshot:
 
 
     def slice(
-        self, 
-        data: str | ArrayLike, 
-        res: int | ArrayLike, 
-        X: str | ArrayLike = "X", 
-        Y: str | ArrayLike = "Y", 
+        self,
+        data: str | ArrayLike,
+        res: int | ArrayLike,
+        X: str | ArrayLike = "X",
+        Y: str | ArrayLike = "Y",
         Z: str | ArrayLike = "Z",
         plane: str = "xy",
         slice_coord: float | u.array.unyt_quantity = 0,
@@ -335,6 +397,7 @@ class Snapshot:
         selection: ArrayLike | None = None,
         unit_system: str = "cgs",
         volume_selection: bool = True, # select based on volume to speed up calculation
+        method: str = "nn",
     ):
         """Make a slice of the simulation grid. Outputs the intepolated data and
         the indices.
@@ -376,6 +439,12 @@ class Snapshot:
             volume**(1/3) to the slicing plane will be used, which speeds up the
             computation a lot (without losing much accuracy), defaults to True
         :type volume_selection: bool, optional
+        :param method: Interpolation method.  ``'nn'`` (default) uses a
+            KD-tree nearest-neighbour lookup.  ``'voronoi'`` builds the 2-D
+            Voronoi tessellation of the cells near the slice plane and assigns
+            each pixel the area-weighted mean of all Voronoi cells that
+            overlap it – exact polygon-pixel intersection, no aliasing.
+        :type method: str, optional
         :return: The interpolated data on a grid data, linear space of the x
             grid, linear space of the y grid
         :rtype: (unyt.unyt_array, unyt.unyt_array, unyt.unyt_array)
@@ -444,6 +513,7 @@ class Snapshot:
             X = X[mask]
             Y = Y[mask]
             Z = Z[mask]
+            volume = volume[mask]
 
 
         # Make Euclidean grid
@@ -451,18 +521,34 @@ class Snapshot:
         yspace = np.linspace(y0, y1, ny, endpoint=False)
         zspace = slice_coord
 
-        grid_x, grid_y, grid_z = np.meshgrid(xspace, yspace, zspace, indexing="ij")
+        if method == "nn":
+            grid_x, grid_y, grid_z = np.meshgrid(xspace, yspace, zspace, indexing="ij")
+            coords      = np.stack([X, Y, Z], axis=-1)
+            grid_coords = np.squeeze(np.stack([grid_x, grid_y, grid_z], axis=-1))
+            i           = _kdtree_interpolate(coords=coords, grid_coords=grid_coords)
+            sliced_data = data[i].in_base(unit_system)
+            return sliced_data, xspace, yspace
 
-        coords = np.stack([X, Y, Z], axis=-1)  # coordinates of the particles 
-        grid_coords = np.stack([grid_x, grid_y, grid_z], axis=-1)  # coordinates of the grid (query points)
-        grid_coords = np.squeeze(grid_coords)            # remove extra dimension (nx, ny, 1, 3) to (nx, ny, 3)
+        elif method == "voronoi":
+            from richio.voronoi_viz import _voronoi_slice
 
-        i = _kdtree_interpolate(coords=coords, grid_coords=grid_coords)
+            # Convert to CGS scalars for the numba backend
+            x0f = float(x0.in_base("cgs").v);  x1f = float(x1.in_base("cgs").v)
+            y0f = float(y0.in_base("cgs").v);  y1f = float(y1.in_base("cgs").v)
+            Xf  = np.asarray(X.in_base("cgs"),    dtype=np.float64)
+            Yf  = np.asarray(Y.in_base("cgs"),    dtype=np.float64)
+            df  = np.asarray(data.in_base("cgs"), dtype=np.float64)
+            vf  = (np.asarray(volume.in_base("cgs"), dtype=np.float64)
+                   if volume_selection else None)
 
-        sliced_data = data[i]
-        sliced_data = sliced_data.in_base(unit_system)
+            result_np   = _voronoi_slice(df, Xf, Yf, x0f, x1f, y0f, y1f, nx, ny,
+                                         vol_f=vf)
+            data_cgs_unit = data.in_base("cgs").units
+            sliced_data = (result_np * data_cgs_unit).in_base(unit_system)
+            return sliced_data, xspace, yspace
 
-        return sliced_data, xspace, yspace
+        else:
+            raise ValueError(f"slice: unknown method '{method}'. Use 'nn' or 'voronoi'.")
 
 
 class SnapshotH5(

@@ -69,18 +69,19 @@ class SnapshotPlotter:
             return self.slice(data=data, res=512, X='CMx', Y='CMy', Z='CMz', plane='xy', slice_coord=0, **kwargs)
 
     def slice(
-        self, 
-        data: str | ArrayLike, 
-        res: int | ArrayLike, 
-        X: str | ArrayLike = "X", 
-        Y: str | ArrayLike = "Y", 
+        self,
+        data: str | ArrayLike,
+        res: int | ArrayLike,
+        X: str | ArrayLike = "X",
+        Y: str | ArrayLike = "Y",
         Z: str | ArrayLike = "Z",
         plane: str = "xy",
         slice_coord: float | u.array.unyt_quantity = 0,
         box_size: ArrayLike | None = None,
         selection: ArrayLike | None = None,
         unit_system: str = "cgs",
-        volume_selection: bool = True, # select based on volume to speed up calculation
+        volume_selection: bool = True,
+        method: str = "nn",
         ax: Any | None = None,
         cmap: str | Colormap = "twilight",
         label_latex: str = "\\rho",
@@ -88,11 +89,12 @@ class SnapshotPlotter:
         **kwargs
     ):
         """
-        Make a slice plot.
+        Make a slice plot.  Pass ``method='voronoi'`` for the analytical
+        Voronoi-based slice (exact polygon-pixel intersection).
         """
         sliced_data, xspace, yspace = self.snap.slice(
-            data=data, 
-            res=res, 
+            data=data,
+            res=res,
             X=X,
             Y=Y,
             Z=Z,
@@ -102,6 +104,7 @@ class SnapshotPlotter:
             selection=selection,
             unit_system=unit_system,
             volume_selection=volume_selection,
+            method=method,
         )
 
         if ax is None:
@@ -131,15 +134,18 @@ class SnapshotPlotter:
         box_size: ArrayLike | None = None,
         unit_system: str = "cgs",
         selection: ArrayLike = None,
+        method: str = "nn",
         ax: Any | None = None,
         cmap: str | Colormap = "twilight",
-        label_latex: str = "\\Sigma",       # TODO: make them automatic from data name
+        label_latex: str = "\\Sigma",
         unit_latex: str | None = None,
         **kwargs,
     ):
         """
-        Make a projection plot. To make use of the unit system, use either str
-        keys or unyt_array data for `data`, `X`, `Y`, `Z`, `box_size`.
+        Make a projection plot.  Pass ``method='voronoi'`` for the analytical
+        Voronoi-based projection (mass-conservative column integral).
+        To make use of the unit system, use either str keys or unyt_array data
+        for `data`, `X`, `Y`, `Z`, `box_size`.
         """
         projected_data, xspace, yspace = self.snap.project(
             data=data,
@@ -149,8 +155,9 @@ class SnapshotPlotter:
             Z=Z,
             box_size=box_size,
             unit_system=unit_system,
-            selection=selection
-            )
+            selection=selection,
+            method=method,
+        )
 
         ax, im = scalar_map(
             f=projected_data,
