@@ -21,9 +21,30 @@ import h5py
 import numpy as np
 import unyt as u
 from numpy.typing import ArrayLike
+from rich.console import Console
+from rich.table import Table
 
+from richio.config import FIELD_REGISTRY
 from richio.plots import SnapshotPlotter
 from richio.units import units
+
+
+def _build_h5_aliases():
+    """Build _field_aliases for SnapshotH5 from the central registry."""
+    return {
+        k: v["aliases"]
+        for k, v in FIELD_REGISTRY.items()
+        if not v.get("npy_only", False)
+    }
+
+
+def _build_npy_aliases():
+    """Build _field_aliases for SnapshotNPY from the central registry."""
+    result = {}
+    for k, v in FIELD_REGISTRY.items():
+        npy_key = v.get("npy_name", k)  # use npy_name if present, else h5 key
+        result[npy_key] = v["aliases"]
+    return result
 
 
 def load(path):
@@ -101,25 +122,24 @@ class Snapshot:
         """
         Dictionary mapping field names to metadata.
 
+        For recognised fields the ``unit`` and ``aliases`` keys are populated.
+        For unrecognised fields (not in the central registry) both values are
+        ``None`` / empty — they are still listed so users know the field exists.
+
         Returns
         -------
         dict
-            Dictionary with field names as keys and metadata as values
-
-        Examples
-        --------
-        >>> info = snap._field_info
-        >>> print(info['Density'])
-        {'unit': g/cm³, 'aliases': ['Den', 'density', 'rho']}
+            ``{field: {"unit": <unit or None>, "aliases": [...]}}``
         """
         info = {}
-
         for field in self.keys():
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                unit = units.get_unit(field, default=None)
             info[field] = {
-                "unit": units.get_unit(field),
-                "aliases": self._field_aliases[field],
+                "unit":    unit,
+                "aliases": self._field_aliases.get(field, []),
             }
-
         return info
 
     def info(self, unit_system="rich", show_aliases=True) -> None:
@@ -139,77 +159,73 @@ class Snapshot:
         >>> snap.info(unit_system='cgs')
         >>> snap.info(show_aliases=False)
         """
-        # Header
-        print("=" * 100)
-        print(f"RICH SNAPSHOT INFORMATION".center(100))
-        print("=" * 100)
+        console = Console()
 
-        # Metadata
-        print(f"\n{'Snapshot Details':<40}")
-        print("-" * 100)
+        # ---- Metadata table ------------------------------------------------
+        meta_table = Table(show_header=False, box=None, padding=(0, 1))
+        meta_table.add_column(style="bold cyan",  no_wrap=True)
+        meta_table.add_column(style="white")
 
-        meta_info = [
-            ("Path", self.path),
-            ("Snapshot Number", self.snapnum),
-        ]
+        meta_table.add_row("Path",            str(self.path))
+        meta_table.add_row("Snapshot number", str(self.snapnum))
 
-        # Add optional metadata
         for attr, label in [("time", "Time"), ("box", "Box size"), ("cycle", "Cycle")]:
             try:
-                val = getattr(self, attr)
-                meta_info.append((label, val.in_base(unit_system)))
-            except:
+                val = getattr(self, attr).in_base(unit_system)
+                # Squeeze single-element arrays to scalar unyt_quantity for cleaner display
+                if hasattr(val, "ndim") and val.ndim <= 1 and val.size == 1:
+                    val = val[0]
+                meta_table.add_row(label, str(val))
+            except Exception:
                 pass
 
         try:
-            meta_info.append(("Number of Cells", f"{len(self):,}"))
-        except:
+            meta_table.add_row("Number of cells", f"{len(self):,}")
+        except Exception:
             pass
 
         if hasattr(self, "rank"):
-            meta_info.append(("Number of Ranks", self.rank))
+            meta_table.add_row("Number of ranks", str(self.rank))
 
-        for label, value in meta_info:
-            print(f"  {label:<25} : {value}")
+        console.rule("[bold]RICH Snapshot Information[/bold]")
+        console.print(meta_table)
 
-        # Fields
-        print(f"\n{'Available Fields':<40} [Unit System: {unit_system.upper()}]")
-        print("-" * 100)
-
-        # Header row
+        # ---- Fields table --------------------------------------------------
+        field_table = Table(
+            title=f"Available Fields  (unit system: {unit_system.upper()})",
+            show_lines=False,
+            header_style="bold magenta",
+        )
+        field_table.add_column("Field",   style="cyan",  no_wrap=True)
+        field_table.add_column("Unit",    style="green")
         if show_aliases:
-            print(f"{'Field':<15} {'Unit':<40} {'Aliases'}")
-        else:
-            print(f"{'Field':<15} {'Unit'}")
-        print("-" * 100)
+            field_table.add_column("Aliases", style="dim")
 
-        # Field information
-        field_info_dict = self._field_info
+        for field, meta in self._field_info.items():
+            unit = meta["unit"]
 
-        for field in self.keys():
-            if field not in field_info_dict:
-                continue
-
-            info = field_info_dict[field]
-
-            # Format unit
-            if unit_system == "rich":
-                unit_str = str(info["unit"])
+            if unit is None:
+                unit_str = "[dim]?[/dim]"
+            elif unit == 1:
+                unit_str = "[dim](unused)[/dim]"
+            elif unit_system == "rich":
+                unit_str = str(unit)
             else:
-                unit_str = str((1 * info["unit"]).in_base(unit_system))
+                try:
+                    unit_str = str((1.0 * unit).in_base(unit_system))
+                except Exception:
+                    unit_str = "[dim]?[/dim]"
 
             if show_aliases:
-                aliases = info.get("aliases", [])
-                alias_str = ", ".join(aliases) if aliases else "-"
-                print(f"{field:<15} {unit_str:<40} {alias_str}")
+                aliases = meta.get("aliases", [])
+                alias_str = ", ".join(aliases) if aliases else "[dim]-[/dim]"
+                field_table.add_row(field, unit_str, alias_str)
             else:
-                print(f"{field:<15} {unit_str}")
+                field_table.add_row(field, unit_str)
 
-        # Footer
-        print("-" * 100)
-        print(f"Total: {len(self.keys())} fields")
-
-        print("=" * 100)
+        console.print(field_table)
+        console.print(f"Total: [bold]{len(self.keys())}[/bold] fields")
+        console.rule()
 
 
     def _get_data(
@@ -465,63 +481,8 @@ class Snapshot:
         return sliced_data, xspace, yspace
 
 
-class SnapshotH5(
-    Snapshot
-):
-    _field_aliases = {
-        # Positions
-        "X": ["position_x", "pos_x", "x", "particle_position_x"],
-        "Y": ["position_y", "pos_y", "y", "particle_position_y"],
-        "Z": ["position_z", "pos_z", "z", "particle_position_z"],
-        # Center of mass
-        "CMx": ["cm_x", "center_of_mass_x"],
-        "CMy": ["cm_y", "center_of_mass_y"],
-        "CMz": ["cm_z", "center_of_mass_z"],
-        # Velocities
-        "Vx": ["velocity_x", "vx", "vel_x", "particle_velocity_x"],
-        "Vy": ["velocity_y", "vy", "vel_y", "particle_velocity_y"],
-        "Vz": ["velocity_z", "vz", "vel_z", "particle_velocity_z"],
-        "divV": ["velocity_divergence", "DivV", "div_v", "divergence"],
-        # Thermodynamic
-        "Density": [
-            "density",
-            "densitites",
-            "Den",
-            "rho",
-        ],  # swiftsimio: 'densities', yt: 'density'
-        "Pressure": ["pressure", "P"],
-        "Temperature": ["temperature", "T", "temp"],
-        "InternalEnergy": ["internal_energy", "IE", "specific_internal_energy", "sie"],
-        "tracers/Entropy": ["entropy", "Entropy", "S"],
-        "Dissipation": ["dissipation", "Diss", "dissipation_rate"],
-        # Volume
-        "Volume": ["volume", "Vol", "volumes"],
-        # Radiation
-        "Erad": ["radiation_energy", "Rad", "E_rad", "Erad"],
-        # Gradients - Pressure
-        "DpDx": ["pressure_gradient_x", "grad_p_x", "dp_dx"],
-        "DpDy": ["pressure_gradient_y", "grad_p_y", "dp_dy"],
-        "DpDz": ["pressure_gradient_z", "grad_p_z", "dp_dz"],
-        # Gradients - Density
-        "DrhoDx": ["density_gradient_x", "grad_rho_x", "drho_dx"],
-        "DrhoDy": ["density_gradient_y", "grad_rho_y", "drho_dy"],
-        "DrhoDz": ["density_gradient_z", "grad_rho_z", "drho_dz"],
-        # Gradients - Internal Energy
-        "DsieDx": ["sie_gradient_x", "grad_sie_x", "dsie_dx"],
-        "DsieDy": ["sie_gradient_y", "grad_sie_y", "dsie_dy"],
-        "DsieDz": ["sie_gradient_z", "grad_sie_z", "dsie_dz"],
-        # The percentage of material that comes from star
-        "tracers/Star": ["star_fraction", "Star", "star", "star_ratio", "stellar_fraction"],
-        # Metadata
-        "Box": ["box_size", "box", "boxsize"],
-        "Time": ["time", "t", "tfb", "simulation_time", "current_time"],
-        "Cycle": ["cycle", "step", "iteration"],
-        "ID": ["particle_id", "id", "ids", "particle_ids"],
-        # Unused
-        "Eg_0": ["eg_0"],
-        "stickers": ["stickers"],
-        "tracers/WasRemoved": ["was_removed", "WasRemoved", "removed"],
-    }
+class SnapshotH5(Snapshot):
+    _field_aliases = _build_h5_aliases()
 
     # Reverse mapping for quick lookup, build only once
     _alias_to_canonical = {}
@@ -625,43 +586,7 @@ class SnapshotNPY(Snapshot):
     Loading Paola's .npy directories.
     """
 
-    _field_aliases = {
-        # Positions
-        "CMx": SnapshotH5._field_aliases["CMx"],
-        "CMy": SnapshotH5._field_aliases["CMy"],
-        "CMz": SnapshotH5._field_aliases["CMz"],
-        # Velocities
-        "Vx": SnapshotH5._field_aliases["Vx"],
-        "Vy": SnapshotH5._field_aliases["Vy"],
-        "Vz": SnapshotH5._field_aliases["Vz"],
-        "DivV": SnapshotH5._field_aliases["divV"],
-        # Mass and volume
-        "Mass": [
-            "mass",
-            "masses",
-            "particle_mass",
-            "m",
-        ],  # swiftsimio uses 'masses' # calculated by den*vol, not directly from output .h5
-        "Vol": SnapshotH5._field_aliases["Volume"],
-        # Thermodynamic
-        "Den": SnapshotH5._field_aliases["Density"],
-        "P": SnapshotH5._field_aliases["Pressure"],
-        "T": SnapshotH5._field_aliases["Temperature"],
-        "IE": SnapshotH5._field_aliases["InternalEnergy"],
-        "Diss": SnapshotH5._field_aliases["Dissipation"],
-        "Entropy": SnapshotH5._field_aliases["tracers/Entropy"],
-        # Radiation
-        "Rad": SnapshotH5._field_aliases["Erad"],
-        # Gradients - Pressure
-        "DpDx": SnapshotH5._field_aliases["DpDx"],
-        "DpDy": SnapshotH5._field_aliases["DpDy"],
-        "DpDz": SnapshotH5._field_aliases["DpDz"],
-        # The star fraction
-        "Star": SnapshotH5._field_aliases["tracers/Star"],
-        # Metadata
-        "box": SnapshotH5._field_aliases["Box"],
-        "tfb": SnapshotH5._field_aliases["Time"],
-    }
+    _field_aliases = _build_npy_aliases()
 
     # Reverse mapping for quick lookup, build only once
     _alias_to_canonical = {}

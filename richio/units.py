@@ -15,11 +15,14 @@
 
 import warnings
 
-import numpy as np
 import unyt as u
 from unyt import Unit, UnitRegistry
 from unyt.dimensions import length, mass, time
 from unyt.unit_systems import UnitSystem
+
+from richio.config import FIELD_REGISTRY
+
+_MISSING = object()  # sentinel for optional default in get_unit()
 
 
 class Units:
@@ -32,103 +35,83 @@ class Units:
         reg = UnitRegistry(unit_system="cgs")
 
         # base_value default in mks
-        reg.add("code_mass", base_value=2e30, dimensions=mass, tex_repr=r"M_\odot")
-        reg.add("code_length", base_value=7e8, dimensions=length, tex_repr=r"R_\odot")
-        reg.add("code_time", base_value=1603.0, dimensions=time, tex_repr=r"t_\text{code}")
+        reg.add("code_mass",   base_value=2e30,    dimensions=mass,   tex_repr=r"M_\odot")
+        reg.add("code_length", base_value=7e8,     dimensions=length, tex_repr=r"R_\odot")
+        reg.add("code_time",   base_value=1603.0,  dimensions=time,   tex_repr=r"t_\text{code}")
 
         # Base units
-        self.mscale = Unit("code_mass", registry=reg)  # 2e33 * u.g    # ~ solar mass 1.988e33 g
-        self.lscale = Unit(
-            "code_length", registry=reg
-        )  # 7e10 * u.cm   # ~ solar radius 6.955e10 cm
-        self.tscale = Unit(
-            "code_time", registry=reg
-        )  # such that G ~ 1. would be ~ 1592 s if use more precise solar mass and solar radius
+        self.mscale = Unit("code_mass",   registry=reg)  # ~ solar mass 1.988e33 g
+        self.lscale = Unit("code_length", registry=reg)  # ~ solar radius 6.955e10 cm
+        self.tscale = Unit("code_time",   registry=reg)  # G ≈ 1; ≈ 1592 s
 
-        # The rich unit system                  # convert by (1*)
+        # The rich unit system
         rus = UnitSystem(
             "rich",
-            mass_unit=self.mscale,  # mass: Msun
-            length_unit=self.lscale,  # length: Rsun
-            time_unit=self.tscale,  # time chosen so that G=1
+            mass_unit=self.mscale,
+            length_unit=self.lscale,
+            time_unit=self.tscale,
             registry=reg,
         )
         self.system = rus
         self.registry = reg
 
-        self._unit_per_field = {
-            "Box": self.lscale,
-            "Time": self.tscale,
-            "Cycle": u.Dimensionless,
-            "CMx": self.lscale,
-            "CMy": self.lscale,
-            "CMz": self.lscale,
-            "X": self.lscale,
-            "Y": self.lscale,
-            "Z": self.lscale,
-            "Density": rus["density"],
-            "Dissipation": rus["energy"] / self.lscale**3 / self.tscale,  # confirm this?
-            "DpDx": rus["pressure"] / self.lscale,
-            "DpDy": rus["pressure"] / self.lscale,
-            "DpDz": rus["pressure"] / self.lscale,
-            "DrhoDx": rus["density"] / self.lscale,
-            "DrhoDy": rus["density"] / self.lscale,
-            "DrhoDz": rus["density"] / self.lscale,
-            "DsieDx": rus["energy"] / self.mscale / self.tscale,  # internal energy gradient?
-            "DsieDy": rus["energy"] / self.mscale / self.tscale,  # internal energy gradient?
-            "DsieDz": rus["energy"] / self.mscale / self.tscale,  # internal energy gradient?
-            "Erad": rus["energy"] / self.mscale,
-            "ID": u.Dimensionless,
-            "InternalEnergy": rus["energy"] / self.mscale,
-            "Pressure": rus["pressure"],
-            "Temperature": rus["temperature"],
-            "Volume": rus["volume"],
-            "Vx": rus["velocity"],
-            "Vy": rus["velocity"],
-            "Vz": rus["velocity"],
-            "divV": rus["velocity"] / self.lscale,
-            "tracers/Entropy": rus["energy"]
-            / rus["temperature"]
-            / self.mscale,  # entropy per unit mass
-            "tracers/Star": u.Dimensionless,  # proportion of matter that belongs to star, dimensionless, 0-1
-            "Eg_0": 1,  # Elad: All of the things that are zero are not used in this simulation
-            "stickers": 1,  #
-            "tracers/WasRemoved": 1,  #
+        # ------------------------------------------------------------------
+        # Named unit expressions — the string keys used in FIELD_REGISTRY.
+        # Add a new key here if you need a new unit expression.
+        # ------------------------------------------------------------------
+        _unit_keys = {
+            "lscale":              self.lscale,
+            "tscale":              self.tscale,
+            "mscale":              self.mscale,
+            "dimensionless":       u.Dimensionless,
+            "density":             rus["density"],
+            "pressure":            rus["pressure"],
+            "temperature":         rus["temperature"],
+            "volume":              rus["volume"],
+            "velocity":            rus["velocity"],
+            "specific_energy":     rus["energy"] / self.mscale,
+            "dissipation":         rus["energy"] / self.lscale**3 / self.tscale,
+            "pressure_gradient":   rus["pressure"] / self.lscale,
+            "density_gradient":    rus["density"]  / self.lscale,
+            "sie_gradient":        rus["energy"]   / self.mscale / self.tscale,
+            "velocity_divergence": rus["velocity"] / self.lscale,
+            "specific_entropy":    rus["energy"]   / rus["temperature"] / self.mscale,
+            "tfb_unit":            2.577726 * u.day,  # NPY fallback time unit
+            "unused":              1,
         }
 
-        # Alias for npy files
-        self._unit_per_field.update(
-            {
-                "box": self._unit_per_field["Box"],
-                "Den": self._unit_per_field["Density"],
-                "Diss": self._unit_per_field["Dissipation"],
-                "Entropy": self._unit_per_field["tracers/Entropy"],
-                "IE": self._unit_per_field["InternalEnergy"],
-                "Mass": self.mscale,
-                "P": self._unit_per_field["Pressure"],
-                "Rad": self._unit_per_field["Erad"],
-                "Star": self._unit_per_field["tracers/Star"],
-                "T": self._unit_per_field["Temperature"],
-                "tfb": 2.577726*u.day,  # fallback time for Mbh=10^4, Mstar=0.5, Rstar=0.47 temporary patch #TODO: think of a better solution...
-                "Vol": self._unit_per_field["Volume"],
-                "DivV": self._unit_per_field["divV"],
-            }
-        )
+        # Build field→unit mapping from the central registry (one place to maintain)
+        self._unit_per_field = {}
+        for h5_key, info in FIELD_REGISTRY.items():
+            self._unit_per_field[h5_key] = _unit_keys[info["unit"]]
 
-    def get_unit(self, key: str):
+            npy_name = info.get("npy_name")
+            if npy_name and npy_name != h5_key:
+                npy_unit_key = info.get("npy_unit", info["unit"])
+                self._unit_per_field[npy_name] = _unit_keys[npy_unit_key]
+
+    def get_unit(self, key: str, default=_MISSING):
         """
         Return the unit associated with a RICH output field.
-        """
-        if key in self._unit_per_field.keys():
-            unit = self._unit_per_field[key]
 
+        Parameters
+        ----------
+        key : str
+            Field name (canonical or alias).
+        default : optional
+            Value to return when the key is unknown. If omitted, raises
+            ValueError for unknown keys.
+        """
+        if key in self._unit_per_field:
+            unit = self._unit_per_field[key]
             if unit == 1:
                 warnings.warn(f"'{key}' is in the data output but not used in the simulation.")
-
             return unit
 
-        else:
-            raise ValueError(f"Unknown key '{key}'. Supported keys: {list(self._unit_per_field)}")
+        if default is not _MISSING:
+            return default
+
+        raise ValueError(f"Unknown key '{key}'. Supported keys: {list(self._unit_per_field)}")
 
 
 # Singleton instance for convenience
@@ -138,30 +121,17 @@ units = Units()
 def to_rich_units(qty):
     """
     Convert a unyt_array or unyt_quantity object to using the custom RICH unit
-    registry. This does NOT change the unit, only the registry, such that 
-    `qty.in_base('rich')` is allowed afterwards. 
-    
-    :param qty: unyt_array or unyt_quantity object.
+    registry. This does NOT change the unit, only the registry, such that
+    ``qty.in_base('rich')`` is allowed afterwards.
 
-    :returns: a unyt_array or unyt_quantity object but in RICH unit registry. 
+    :param qty: unyt_array or unyt_quantity object.
+    :returns: a unyt_array or unyt_quantity object but in RICH unit registry.
     """
-    
     if isinstance(qty, u.unyt_quantity):
-        qty = u.unyt_quantity(
-            qty.value,
-            qty.units,
-            registry=units.registry
-        )
+        qty = u.unyt_quantity(qty.value, qty.units, registry=units.registry)
     elif isinstance(qty, u.unyt_array):
-        qty = u.unyt_array(
-            qty.value,
-            qty.units,
-            registry=units.registry
-        )
+        qty = u.unyt_array(qty.value, qty.units, registry=units.registry)
     else:
         raise Exception("Quantity is neither an unyt_quantity nor an unyt_array.")
 
-    qty = qty.in_base('rich')
-
-    return qty
-
+    return qty.in_base("rich")
