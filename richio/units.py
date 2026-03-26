@@ -77,7 +77,7 @@ class Units:
             "velocity_divergence": rus["velocity"] / self.lscale,
             "specific_entropy":    rus["energy"]   / rus["temperature"] / self.mscale,
             "tfb_unit":            2.577726 * u.day,  # NPY fallback time unit
-            "unused":              1,
+            "unknown":             1,
         }
 
         # Build field→unit mapping from the central registry (one place to maintain)
@@ -104,8 +104,8 @@ class Units:
         """
         if key in self._unit_per_field:
             unit = self._unit_per_field[key]
-            if unit == 1:
-                warnings.warn(f"'{key}' is in the data output but not used in the simulation.")
+            # if unit == 1:
+                # warnings.warn(f"'{key}' is in the data output but not used in the simulation.")
             return unit
 
         if default is not _MISSING:

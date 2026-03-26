@@ -181,16 +181,16 @@ FIELD_REGISTRY = {
     },
     "tracers/WasRemoved": {
         "aliases": ["was_removed", "WasRemoved", "removed"],
-        "unit": "unused",
+        "unit": "unknown",
     },
     # ---- Unused / legacy ----------------------------------------------------
     "Eg_0": {
-        "aliases": ["eg_0"],
-        "unit": "unused",
+        "aliases": [],
+        "unit": "unknown",
     },
     "stickers": {
         "aliases": ["stickers"],
-        "unit": "unused",
+        "unit": "unknown",
     },
     # ---- NPY-only fields ----------------------------------------------------
     "Mass": {

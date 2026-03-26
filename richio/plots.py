@@ -85,6 +85,7 @@ class SnapshotPlotter:
         cmap: str | Colormap = "twilight",
         label_latex: str = "\\rho",
         unit_latex: str | None = None,
+        aspect_equal: bool = True,
         **kwargs
     ):
         """
@@ -116,6 +117,9 @@ class SnapshotPlotter:
         
         plt.colorbar(im, ax=ax, label=f"$\\log[{label_latex}/{unit_latex}]$")
 
+        if aspect_equal:
+            plt.gca().set_aspect("equal", adjustable="box")
+
         return ax, im, sliced_data
 
 
@@ -135,6 +139,7 @@ class SnapshotPlotter:
         cmap: str | Colormap = "twilight",
         label_latex: str = "\\Sigma",       # TODO: make them automatic from data name
         unit_latex: str | None = None,
+        aspect_equal: bool = True,
         **kwargs,
     ):
         """
@@ -160,6 +165,7 @@ class SnapshotPlotter:
             cmap=cmap,
             label_latex=label_latex,
             unit_latex=unit_latex,
+            aspect_equal=aspect_equal,
             **kwargs
             )
 
@@ -176,6 +182,7 @@ def scalar_map(f : u.unyt_array | ArrayLike,
                 cmap: str | Colormap = "twilight",
                 label_latex: str = "\\Sigma",
                 unit_latex: str | None = None,
+                aspect_equal: bool = True,
                 **kwargs):
     """
     A general visualisation for any scalar field data.
@@ -216,5 +223,8 @@ def scalar_map(f : u.unyt_array | ArrayLike,
         unit_latex = f.units.latex_repr     #TODO: check dimensionality and raise warning
 
     plt.colorbar(im, ax=ax, label=f"$\\log[{label_latex}/{unit_latex}]$")
+
+    if aspect_equal:
+        plt.gca().set_aspect("equal", adjustable="box")
 
     return ax, im
