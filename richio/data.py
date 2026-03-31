@@ -530,8 +530,10 @@ class SnapshotH5(Snapshot):
                 arr = np.concatenate([f[f"rank{i}/{field}"] for i in range(self.rank)])
                 arr *= units.get_unit(field)
             except KeyError:  # If field is not under rank, try on the root order
-                arr = f[field][:] * units.get_unit(field)
+                arr = f[field][()] * units.get_unit(field)
 
+        if np.ndim(arr) == 0:
+            return arr
         return arr[idx]
 
     def __len__(self) -> int:
