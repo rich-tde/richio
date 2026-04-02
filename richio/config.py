@@ -13,6 +13,29 @@
 #  You should have received a copy of the EUPL in an/all official language(s) of
 #  the European Union along with RICHIO.  If not, see <https://eupl.eu>.
 
+"""
+Central configuration for RICHIO field names, aliases, and units.
+
+The single exported object is :data:`FIELD_REGISTRY`, a dictionary that maps
+every HDF5 / NPY field to its metadata.  It is the **only** place that needs
+to be edited when adding or renaming a simulation output field.
+
+:data:`FIELD_REGISTRY` structure
+---------------------------------
+Each entry has the form::
+
+    "H5_key": {
+        "aliases":  [list of alternative names accepted by __getitem__],
+        "unit":     "<string key resolved by Units.get_unit>",
+        "npy_name": "<canonical name in the NPY format>",  # if different
+        "npy_unit": "<unit key override for the NPY name>",  # optional
+        "npy_only": True,  # if the field does not exist in HDF5 snapshots
+    }
+
+``unit`` values must be valid keys in the ``_unit_keys`` dict inside
+:class:`richio.units.Units`.
+"""
+
 # ---------------------------------------------------------------------------
 # FIELD_REGISTRY — single source of truth for field aliases and units.
 #

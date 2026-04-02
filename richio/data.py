@@ -30,7 +30,15 @@ from richio.units import units
 
 
 def _build_h5_aliases():
-    """Build _field_aliases for SnapshotH5 from the central registry."""
+    """Build the ``_field_aliases`` mapping for :class:`SnapshotH5`.
+
+    Iterates over :data:`~richio.config.FIELD_REGISTRY` and returns a
+    dictionary ``{canonical_key: [alias, ...]}`` for every field that exists
+    in HDF5 snapshots (i.e. entries without ``npy_only: True``).
+
+    :returns: Mapping from canonical HDF5 key to its list of aliases.
+    :rtype: dict[str, list[str]]
+    """
     return {
         k: v["aliases"]
         for k, v in FIELD_REGISTRY.items()
@@ -39,7 +47,15 @@ def _build_h5_aliases():
 
 
 def _build_npy_aliases():
-    """Build _field_aliases for SnapshotNPY from the central registry."""
+    """Build the ``_field_aliases`` mapping for :class:`SnapshotNPY`.
+
+    For each entry in :data:`~richio.config.FIELD_REGISTRY`, uses the
+    ``npy_name`` value as the canonical key (falling back to the HDF5 key when
+    ``npy_name`` is absent).  Returns ``{canonical_npy_key: [alias, ...]}``.
+
+    :returns: Mapping from canonical NPY file-name stem to its list of aliases.
+    :rtype: dict[str, list[str]]
+    """
     result = {}
     for k, v in FIELD_REGISTRY.items():
         npy_key = v.get("npy_name", k)  # use npy_name if present, else h5 key
@@ -48,6 +64,23 @@ def _build_npy_aliases():
 
 
 def load(path):
+    """Load a RICH snapshot from disk and return the appropriate Snapshot object.
+
+    Dispatches to :class:`SnapshotH5` for HDF5 files (``.h5`` / ``.hdf5``) or
+    to :class:`SnapshotNPY` for directories containing per-field ``.npy`` /
+    ``.txt`` files.
+
+    :param path: Path to an HDF5 snapshot file or to a directory of NPY files.
+    :type path: str
+    :returns: The loaded snapshot object.
+    :rtype: :class:`SnapshotH5` or :class:`SnapshotNPY`
+    :raises FileNotFoundError: If *path* is neither a valid file nor a directory.
+
+    Examples::
+
+        snap = richio.load("snap_0042.h5")
+        snap = richio.load("/run/snap_0042/")
+    """
     if os.path.isfile(path) and (path.endswith("h5") or path.endswith("hdf5")):  # if hdf5 file
         with h5py.File(path) as f:
             pass
@@ -59,6 +92,26 @@ def load(path):
 
 
 class Snapshot:
+    """Abstract base class for RICH simulation snapshots.
+
+    Provides field access, unit handling, masking helpers, and grid
+    interpolation methods shared by both :class:`SnapshotH5` and
+    :class:`SnapshotNPY`.  Do not instantiate directly — use
+    :func:`load` instead.
+
+    :param path: Path to the snapshot file or directory.
+    :type path: str
+
+    Attributes
+    ----------
+    path : str
+        File or directory path as given to the constructor.
+    plots : :class:`~richio.plots.SnapshotPlotter`
+        Plotter bound to this snapshot.
+    snapnum : int
+        Snapshot index extracted from the path, or ``-1`` if not found.
+    """
+
     def __init__(self, path: str):
         self.path = path
         self.plots = SnapshotPlotter(self)  # initialise a plotter object
@@ -69,10 +122,13 @@ class Snapshot:
             self._build_alias_mapping()
 
     def _get_snapnum(self):
-        """
-        Try to read the snapshot number from the path. Matches `snap_<num>`
-        pattern across the path and returns the first math. Set to -1 if no
-        match is found.
+        """Extract the snapshot index from :attr:`path`.
+
+        Searches for the pattern ``snap_<digits>`` anywhere in the path string
+        and returns the first match as an integer.
+
+        :returns: Snapshot index, or ``-1`` if the pattern is not found.
+        :rtype: int
         """
 
         # pattern to match 'snap_' followed by digits
@@ -87,49 +143,77 @@ class Snapshot:
 
     @classmethod
     def _build_alias_mapping(cls):
-        """Build once per class, not per instance."""
+        """Populate the class-level ``_alias_to_canonical`` dict (called once).
+
+        Iterates over ``cls._field_aliases`` and registers both the canonical
+        name and every alias so that :meth:`_resolve_field_name` can perform
+        O(1) lookups.  The method is idempotent; subsequent calls are no-ops
+        because the dict is already populated.
+        """
         for canonical, aliases in cls._field_aliases.items():
             cls._alias_to_canonical[canonical] = canonical
             for alias in aliases:
                 cls._alias_to_canonical[alias] = canonical
 
     def __getattr__(self, name):
-        """Allow attribute-style access: snap.density"""
+        """Enable attribute-style field access (e.g. ``snap.density``).
 
+        Delegates to :meth:`__getitem__` so that any registered field name or
+        alias can be used as an attribute.
+
+        :param name: Field name or alias.
+        :type name: str
+        :raises AttributeError: If *name* is not a known field or alias.
+        """
         try:
             return self[name]
         except FileNotFoundError:
             raise AttributeError(f"Field '{name}' not found")
 
     def _resolve_field_name(self, key: str) -> str:
-        """Read from shared class dict."""
+        """Return the canonical field name for *key*, resolving any alias.
+
+        :param key: Field name or alias.
+        :type key: str
+        :returns: Canonical key from :data:`~richio.config.FIELD_REGISTRY`,
+                  or *key* unchanged if not found.
+        :rtype: str
+        """
         return self.__class__._alias_to_canonical.get(key, key)
 
     def mask_star_ratio(self) -> np.ndarray:
-        """
-        Get mask for star particles only (tracers/Star = 1).
+        """Boolean mask selecting stellar-material cells.
+
+        A cell is considered stellar when its ``star`` tracer value is within
+        ``1e-3`` of unity.
+
+        :returns: Boolean array of shape ``(N,)``; ``True`` for star cells.
+        :rtype: :class:`numpy.ndarray`
         """
         return np.abs(self.star - 1) < 1e-3
 
     def mask_density(self) -> np.ndarray:
-        """
-        Get mask for floor density gas.
+        """Boolean mask excluding density-floor (background) cells.
+
+        Selects cells whose density exceeds the floor threshold
+        ``1e-19`` in code density units.
+
+        :returns: Boolean array of shape ``(N,)``; ``True`` for non-floor cells.
+        :rtype: :class:`numpy.ndarray`
         """
         return self.density > 1e-19 * units.get_unit("Density")
 
     @property
     def _field_info(self):
-        """
-        Dictionary mapping field names to metadata.
+        """Per-field metadata for every field present in this snapshot.
 
-        For recognised fields the ``unit`` and ``aliases`` keys are populated.
-        For unrecognised fields (not in the central registry) both values are
-        ``None`` / empty — they are still listed so users know the field exists.
+        For fields registered in :data:`~richio.config.FIELD_REGISTRY` the
+        ``unit`` and ``aliases`` keys are populated.  For unrecognised fields
+        ``unit`` is ``None`` and ``aliases`` is an empty list — they are still
+        included so users can see all available fields.
 
-        Returns
-        -------
-        dict
-            ``{field: {"unit": <unit or None>, "aliases": [...]}}``
+        :returns: Mapping ``{field: {"unit": <unit or None>, "aliases": [...]}}``
+        :rtype: dict[str, dict]
         """
         info = {}
         for field in self.keys():
@@ -144,20 +228,25 @@ class Snapshot:
 
     def info(self, unit_system="rich", show_aliases=True) -> None:
         """
-        Display snapshot information and available fields.
+        Display snapshot metadata and available fields in a rich-formatted table.
 
-        Parameters
-        ----------
-        unit_system : str, optional
-            Unit system: 'rich' (default), 'cgs', or 'mks'
-        show_aliases : bool, optional
-            Show field aliases (default: True)
+        Prints a metadata panel (path, snapshot number, time, box size, cycle,
+        cell count) followed by a field table listing the name, unit, and
+        aliases of every field present in the snapshot.
 
-        Examples
-        --------
-        >>> snap.info()
-        >>> snap.info(unit_system='cgs')
-        >>> snap.info(show_aliases=False)
+        :param unit_system: Unit system used for displaying values: ``'rich'``
+                            (code solar units, default), ``'cgs'``, or
+                            ``'mks'``.
+        :type unit_system: str
+        :param show_aliases: Whether to include an *Aliases* column in the
+                             field table.  Defaults to ``True``.
+        :type show_aliases: bool
+
+        Examples::
+
+            snap.info()
+            snap.info(unit_system='cgs')
+            snap.info(show_aliases=False)
         """
         console = Console()
 
@@ -231,6 +320,18 @@ class Snapshot:
     def _get_data(
         self, data: str | ArrayLike
         ) -> u.unyt_array:
+        """Resolve *data* to a :class:`unyt.unyt_array` with physical units.
+
+        Accepts a field name string (looked up via :meth:`__getitem__`), a
+        :class:`unyt.unyt_array` (passed through unchanged), or a bare
+        :class:`numpy.ndarray` (treated as dimensionless with a warning).
+
+        :param data: Field name, unit-bearing array, or dimensionless array.
+        :type data: str or ArrayLike
+        :returns: Data array with units attached.
+        :rtype: :class:`unyt.unyt_array`
+        :raises TypeError: For unsupported input types.
+        """
         if isinstance(data, str):
             key = data
             data = self[key]
@@ -259,10 +360,41 @@ class Snapshot:
         unit_system: str = "cgs",
         selection: ArrayLike = None,
     ):
-        """
-        Calculate a quantity, interpolate on grid, and integrate along z axis.
-        To make use of the unit system, use either str keys or unyt_array data
-        for `data`, `X`, `Y`, `Z`, `box_size`.
+        """Interpolate *data* onto a 3-D grid and integrate (project) along z.
+
+        Calls :meth:`to_grid` to build the nearest-neighbour grid, then sums
+        ``grid_data * dz`` along the z axis to produce a column-integrated
+        2-D map.  For unit-aware results pass field name strings or
+        :class:`unyt.unyt_array` objects for *data*, *X*, *Y*, *Z*, and
+        *box_size*.
+
+        :param data: Field to project — field name string or array of shape
+                     ``(N,)``.
+        :type data: str or ArrayLike
+        :param res: Grid resolution — single integer for a cubic grid, or a
+                    three-element sequence ``(nx, ny, nz)``.
+        :type res: int or ArrayLike
+        :param X: x-coordinates of cell centres (field name or array).
+                  Defaults to ``"X"``.
+        :type X: str or ArrayLike
+        :param Y: y-coordinates of cell centres. Defaults to ``"Y"``.
+        :type Y: str or ArrayLike
+        :param Z: z-coordinates of cell centres. Defaults to ``"Z"``.
+        :type Z: str or ArrayLike
+        :param box_size: Domain bounds ``[x0, y0, z0, x1, y1, z1]``.  Reads
+                         from the snapshot's ``box`` field when ``None``.
+        :type box_size: ArrayLike or None
+        :param unit_system: Target unit system for the output (``'cgs'``,
+                            ``'rich'``, etc.).  Defaults to ``'cgs'``.
+        :type unit_system: str
+        :param selection: Boolean mask of shape ``(N,)`` to restrict which
+                          cells are used.  Defaults to ``None`` (all cells).
+        :type selection: ArrayLike or None
+        :returns: Tuple ``(projected_data, xspace, yspace)`` where
+                  *projected_data* has shape ``(nx-1, ny-1)`` and *xspace* /
+                  *yspace* are 1-D coordinate arrays.
+        :rtype: tuple[:class:`unyt.unyt_array`, :class:`unyt.unyt_array`,
+                      :class:`unyt.unyt_array`]
         """
         grid_data, i, xspace, yspace, zspace = self.to_grid(data, res, 
                 X, Y, Z, box_size, selection)
@@ -285,8 +417,39 @@ class Snapshot:
         selection: ArrayLike = None,
         endpoint: bool = False,
     ):
-        """
-        Interpolate to a fixed grid.
+        """Interpolate *data* from cell centres onto a regular Cartesian grid.
+
+        Builds a 3-D rectilinear grid spanning the domain bounds, then uses a
+        k-d tree (nearest-neighbour) to assign each grid point the value of its
+        closest cell.
+
+        :param data: Field to interpolate — field name string or array of
+                     shape ``(N,)``.
+        :type data: str or ArrayLike
+        :param res: Grid resolution — single integer for a cubic grid or a
+                    three-element sequence ``(nx, ny, nz)``.
+        :type res: int or ArrayLike
+        :param X: x-coordinates of cell centres. Defaults to ``"X"``.
+        :type X: str or ArrayLike
+        :param Y: y-coordinates of cell centres. Defaults to ``"Y"``.
+        :type Y: str or ArrayLike
+        :param Z: z-coordinates of cell centres. Defaults to ``"Z"``.
+        :type Z: str or ArrayLike
+        :param box_size: Domain bounds ``[x0, y0, z0, x1, y1, z1]``.  Reads
+                         from the snapshot's ``box`` field when ``None``.
+        :type box_size: ArrayLike or None
+        :param selection: Boolean mask ``(N,)`` to restrict which cells are
+                          used.  Defaults to ``None``.
+        :type selection: ArrayLike or None
+        :param endpoint: If ``True`` the grid spacing is
+                         ``(hi-lo)/(n-1)``; if ``False`` (default) it is
+                         ``(hi-lo)/n`` so the grid never reaches the upper
+                         boundary.
+        :type endpoint: bool
+        :returns: Tuple ``(grid_data, indices, xspace, yspace, zspace)``
+                  where *grid_data* has shape ``(nx, ny, nz)`` and *indices*
+                  are the nearest-cell indices used.
+        :rtype: tuple
         """
         # Fetch data
         data = self._get_data(data)
@@ -482,6 +645,23 @@ class Snapshot:
 
 
 class SnapshotH5(Snapshot):
+    """RICH snapshot backed by a single HDF5 file.
+
+    Supports multi-rank HDF5 files where particle data is stored under
+    ``rank0/``, ``rank1/``, … groups.  Single-rank files (no rank groups)
+    are also supported — fields are read from the root.
+
+    :param path: Path to the ``.h5`` or ``.hdf5`` snapshot file.
+    :type path: str
+
+    Attributes
+    ----------
+    rank : int
+        Number of MPI ranks detected in the file (1 for single-core runs).
+    f : :class:`h5py.File`
+        Open HDF5 file handle for direct access to the raw data.
+    """
+
     _field_aliases = _build_h5_aliases()
 
     # Reverse mapping for quick lookup, build only once
@@ -495,10 +675,13 @@ class SnapshotH5(Snapshot):
         super().__init__(path)  # inherit all methods from parent class
 
     def _get_rank(self) -> int:
-        """
-        Get the number of ranks.
-        
-        If ran on single core this should return 1, as no 'rank' group is found
+        """Detect the number of MPI ranks stored in the HDF5 file.
+
+        Counts ``rank<N>`` top-level groups and returns the total count.
+        Returns ``1`` for single-core files that have no rank groups.
+
+        :returns: Number of ranks (≥ 1).
+        :rtype: int
         """
         with h5py.File(self.path, "r") as f:
             maxrank = 0
@@ -512,9 +695,24 @@ class SnapshotH5(Snapshot):
         return maxrank
 
     def __getitem__(self, key) -> u.unyt_array:
-        """
-        Get numpy array of the desired quantity, combining different ranks.
-        Supports slicing: obj['field'] or obj['field', 1:10] or obj['field', ::-1]
+        """Return a field from the snapshot as a unit-bearing array.
+
+        Concatenates data across all MPI ranks.  Aliases are resolved to their
+        canonical names before the HDF5 lookup.  For fields stored at the root
+        level (e.g. ``Box``, ``Time``), the rank-based path is skipped and the
+        root dataset is read directly.
+
+        Supports optional slicing::
+
+            snap['density']          # full array
+            snap['density', 1:10]    # rows 1–9
+            snap['density', ::-1]    # reversed
+
+        :param key: Field name (or alias), or a tuple ``(field, slice)``.
+        :type key: str or tuple
+        :returns: Field data with physical units attached.
+        :rtype: :class:`unyt.unyt_array`
+        :raises KeyError: If the field is not found in the HDF5 file.
         """
         # Parse key and slice
         if isinstance(key, tuple):
@@ -537,9 +735,15 @@ class SnapshotH5(Snapshot):
         return arr[idx]
 
     def __len__(self) -> int:
-        """
-        Number of particles of the snapshot, combining different ranks.
-        Use the X coordinate to get the number.
+        """Return the total number of cells across all MPI ranks.
+
+        Uses the length of the ``X`` coordinate dataset as a proxy for the
+        cell count.
+
+        :returns: Total cell count.
+        :rtype: int
+        :raises Exception: If neither ``X`` nor ``rank0/X`` is found in the
+                           file.
         """
         with h5py.File(self.path, "r") as f:
             try:
@@ -552,9 +756,15 @@ class SnapshotH5(Snapshot):
 
         return n
 
-    def keys(self) -> list:  # Update this to recursively list all datasets
-        """
-        List all keys that a dataset have, omit the "rank0" prefix.
+    def keys(self) -> list:
+        """Return a sorted list of all dataset names in the HDF5 file.
+
+        Recurses through all groups, strips the ``rank<N>/`` prefix from paths,
+        and de-duplicates so that each field appears once regardless of how many
+        ranks are present.
+
+        :returns: Sorted list of canonical field names.
+        :rtype: list[str]
         """
         def _list_group(f, keys, prefix="") -> list:
 
@@ -584,8 +794,14 @@ class SnapshotH5(Snapshot):
 
 
 class SnapshotNPY(Snapshot):
-    """
-    Loading Paola's .npy directories.
+    """RICH snapshot backed by a directory of per-field NumPy files.
+
+    Each field is stored as ``<FieldName>_<snapnum>.npy`` (or ``.txt``).
+    The snapshot number is extracted from :attr:`path` via the ``snap_<N>``
+    pattern and used to locate the correct files.
+
+    :param path: Path to the directory containing ``.npy`` / ``.txt`` files.
+    :type path: str
     """
 
     _field_aliases = _build_npy_aliases()
@@ -594,11 +810,20 @@ class SnapshotNPY(Snapshot):
     _alias_to_canonical = {}
 
     def __init__(self, path):
-        self.path = path  # TODO: rewrite with Path?
+        self.path = path
 
         super().__init__(path)
 
-    def keys(self) -> list:  # TODO: rewrite this with re?
+    def keys(self) -> list:
+        """Return a sorted list of field names available in the directory.
+
+        Scans for files ending in ``.npy`` or ``.txt``, strips the
+        ``_<snapnum>`` suffix to recover the field name stem, and
+        de-duplicates.
+
+        :returns: Sorted list of field name stems.
+        :rtype: list[str]
+        """
         keys = []
         files = os.listdir(
             self.path
@@ -615,9 +840,22 @@ class SnapshotNPY(Snapshot):
         return keys
 
     def __getitem__(self, key) -> u.unyt_array:
-        """
-        Get numpy array of the desired quantity, combining different ranks.
-        Supports slicing: obj['field'] or obj['field', 1:10] or obj['field', ::-1]
+        """Return a field from the snapshot directory as a unit-bearing array.
+
+        Resolves aliases, then loads ``<FieldName>_<snapnum>.npy`` (or
+        ``.txt`` as a fallback) using memory-mapping for efficiency.
+
+        Supports optional slicing::
+
+            snap['density']          # full array
+            snap['density', 1:10]    # rows 1–9
+
+        :param key: Field name (or alias), or a tuple ``(field, slice)``.
+        :type key: str or tuple
+        :returns: Field data with physical units attached.
+        :rtype: :class:`unyt.unyt_array`
+        :raises FileNotFoundError: If neither ``.npy`` nor ``.txt`` file is
+                                   found for the requested field.
         """
         # Parse key and slice
         if isinstance(key, tuple):
@@ -652,6 +890,11 @@ class SnapshotNPY(Snapshot):
             return arr[idx] * units.get_unit(field)
 
     def __len__(self) -> int:
+        """Return the number of cells by reading the length of the first field.
+
+        :returns: Cell count.
+        :rtype: int
+        """
         for key in self.keys():
             length = len(self[key])
             break
@@ -661,9 +904,24 @@ class SnapshotNPY(Snapshot):
 
 
 def _parse_plane(plane, x, y, z):
-    """
-    Parse a string input "xy" to data x, y, z; "yz" to y, z, x; "zx" to z, x, y,
-    etc, in order to specify the slicing plane.
+    """Permute ``(x, y, z)`` so that the first two axes match *plane*.
+
+    Given a two-character plane string such as ``"xy"``, ``"yz"``, or ``"zx"``
+    (any ordering), returns ``(axis1, axis2, normal_axis)`` where *axis1* and
+    *axis2* span the slicing plane and *normal_axis* is the orthogonal
+    direction to be sliced through.
+
+    :param plane: Two-character string specifying the slice plane, e.g.
+                  ``"xy"``, ``"yz"``, ``"zx"``, ``"yx"``, etc.
+    :type plane: str
+    :param x: x-data (scalar, array, or unyt_array).
+    :param y: y-data.
+    :param z: z-data.
+    :returns: Tuple ``(axis1, axis2, normal)`` corresponding to the requested
+              plane and its normal.
+    :rtype: tuple
+    :raises Exception: If *plane* contains characters other than ``'x'``,
+                       ``'y'``, ``'z'``.
     """
 
     def _parse_xyz(char, x, y, z):
@@ -691,7 +949,30 @@ def _parse_plane(plane, x, y, z):
 
 
 def _kdtree_interpolate(coords, grid_coords, k=1, eps=0, workers=1):
+    """Nearest-neighbour interpolation using a k-d tree.
 
+    Builds a :class:`scipy.spatial.KDTree` from *coords* and queries it at
+    every point in *grid_coords*, returning the index of the nearest source
+    point for each query.
+
+    :param coords: Source point coordinates, shape ``(N, 3)``.
+    :type coords: array-like
+    :param grid_coords: Query point coordinates, shape ``(nx, ny[, nz], 3)``
+                        or ``(M, 3)``.
+    :type grid_coords: array-like
+    :param k: Number of nearest neighbours to find.  Defaults to ``1``.
+    :type k: int
+    :param eps: Approximate search tolerance passed to
+                :meth:`scipy.spatial.KDTree.query`.  Defaults to ``0``
+                (exact).
+    :type eps: float
+    :param workers: Number of parallel workers for the query.  Defaults to
+                    ``1``.
+    :type workers: int
+    :returns: Index array of nearest-source indices, same leading shape as
+              *grid_coords* (minus the last coordinate dimension).
+    :rtype: :class:`numpy.ndarray`
+    """
     from scipy.spatial import KDTree
 
     kdtree = KDTree(coords)  # build tree

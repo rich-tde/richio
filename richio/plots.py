@@ -51,17 +51,40 @@ from richio.units import units
 
 
 def use_nice_style():
+    """Apply the bundled ``nice.mplstyle`` matplotlib style sheet.
+
+    Loads the style from the ``richio/styles/`` package directory and passes it
+    to :func:`matplotlib.pyplot.style.use`.  Call once at the top of a script
+    or notebook to enable the style globally.
+    """
     style_path = files("richio.styles").joinpath("nice.mplstyle")
     plt.style.use(style_path)
 
 
 class SnapshotPlotter:
+    """High-level plotting interface bound to a :class:`~richio.data.Snapshot`.
+
+    An instance is automatically created and attached as ``snap.plots`` when a
+    snapshot is loaded; you should not instantiate this class directly.
+
+    :param snap: The parent snapshot object.
+    :type snap: :class:`~richio.data.Snapshot`
+    """
+
     def __init__(self, snap):
         self.snap = snap
 
     def peek(self, data='density', **kwargs):
-        """
-        A quick peek at the data.
+        """Produce a quick mid-plane xy slice of *data* at 512² resolution.
+
+        Tries ``X``, ``Y``, ``Z`` coordinates first; falls back to centre-of-mass
+        coordinates ``CMx``, ``CMy``, ``CMz`` if the positional fields are absent.
+
+        :param data: Field to visualise.  Defaults to ``'density'``.
+        :type data: str
+        :param kwargs: Extra keyword arguments forwarded to :meth:`slice`.
+        :returns: Tuple ``(ax, im, sliced_data)`` — see :meth:`slice`.
+        :rtype: tuple
         """
         try:
             return self.slice(data=data, res=512, X='X', Y='Y', Z='Z', plane='xy', slice_coord=0, **kwargs)
@@ -88,8 +111,61 @@ class SnapshotPlotter:
         aspect_equal: bool = True,
         **kwargs
     ):
-        """
-        Make a slice plot.
+        """Compute a mid-plane slice and render it as a ``pcolormesh`` plot.
+
+        Delegates the data interpolation to
+        :meth:`~richio.data.Snapshot.slice` and renders log₁₀ of the result
+        using :func:`matplotlib.pyplot.pcolormesh`.  A colorbar labelled with
+        the LaTeX field symbol and unit is added automatically.
+
+        :param data: Field to plot — name string or array of shape ``(N,)``.
+        :type data: str or ArrayLike
+        :param res: Grid resolution — integer (square) or ``(nx, ny)`` tuple.
+        :type res: int or ArrayLike
+        :param X: x-coordinate field name or array. Defaults to ``"X"``.
+        :type X: str or ArrayLike
+        :param Y: y-coordinate field name or array. Defaults to ``"Y"``.
+        :type Y: str or ArrayLike
+        :param Z: z-coordinate field name or array. Defaults to ``"Z"``.
+        :type Z: str or ArrayLike
+        :param plane: Slice plane, e.g. ``"xy"`` (default), ``"yz"``, ``"zx"``.
+        :type plane: str
+        :param slice_coord: Coordinate along the normal axis at which to
+                            slice.  Defaults to ``0``.
+        :type slice_coord: float or :class:`unyt.unyt_quantity`
+        :param box_size: Domain bounds for the plot area.  Auto-detected from
+                         the snapshot when ``None``.
+        :type box_size: ArrayLike or None
+        :param selection: Boolean cell mask. Defaults to ``None`` (all cells).
+        :type selection: ArrayLike or None
+        :param unit_system: Output unit system (``'cgs'``, ``'rich'``, etc.).
+                            Defaults to ``'cgs'``.
+        :type unit_system: str
+        :param volume_selection: Pre-filter cells to within one cell-size of
+                                 the slice plane to speed up computation.
+                                 Defaults to ``True``.
+        :type volume_selection: bool
+        :param ax: Existing :class:`matplotlib.axes.Axes` to draw on.  A new
+                   figure is created when ``None``.
+        :type ax: :class:`matplotlib.axes.Axes` or None
+        :param cmap: Colormap name or object.  Defaults to ``'twilight'``.
+        :type cmap: str or :class:`matplotlib.colors.Colormap`
+        :param label_latex: LaTeX symbol for the colorbar label.
+                            Defaults to ``r'\\rho'``.
+        :type label_latex: str
+        :param unit_latex: LaTeX unit string for the colorbar.  Auto-read from
+                           the data when ``None``.
+        :type unit_latex: str or None
+        :param aspect_equal: Set equal aspect ratio on the axes.
+                             Defaults to ``True``.
+        :type aspect_equal: bool
+        :param kwargs: Additional keyword arguments forwarded to
+                       :func:`~matplotlib.pyplot.pcolormesh` (e.g. ``vmin``,
+                       ``vmax``).
+        :returns: Tuple ``(ax, im, sliced_data)`` — the axes, the
+                  :class:`~matplotlib.collections.QuadMesh`, and the
+                  interpolated data array.
+        :rtype: tuple
         """
         sliced_data, xspace, yspace = self.snap.slice(
             data=data, 
@@ -142,9 +218,45 @@ class SnapshotPlotter:
         aspect_equal: bool = True,
         **kwargs,
     ):
-        """
-        Make a projection plot. To make use of the unit system, use either str
-        keys or unyt_array data for `data`, `X`, `Y`, `Z`, `box_size`.
+        """Compute a column-integrated projection and render it as a plot.
+
+        Delegates integration to :meth:`~richio.data.Snapshot.project` and
+        rendering to :func:`scalar_map`.  Pass field name strings or
+        :class:`unyt.unyt_array` objects for *data*, *X*, *Y*, *Z*, and
+        *box_size* to benefit from automatic unit handling.
+
+        :param data: Field to project — name string or array of shape ``(N,)``.
+        :type data: str or ArrayLike
+        :param res: Grid resolution — integer or ``(nx, ny, nz)`` tuple.
+        :type res: int or ArrayLike
+        :param X: x-coordinates. Defaults to ``"X"``.
+        :type X: str or ArrayLike
+        :param Y: y-coordinates. Defaults to ``"Y"``.
+        :type Y: str or ArrayLike
+        :param Z: z-coordinates (integration axis). Defaults to ``"Z"``.
+        :type Z: str or ArrayLike
+        :param box_size: Domain bounds. Auto-detected when ``None``.
+        :type box_size: ArrayLike or None
+        :param unit_system: Output unit system. Defaults to ``'cgs'``.
+        :type unit_system: str
+        :param selection: Boolean cell mask. Defaults to ``None``.
+        :type selection: ArrayLike or None
+        :param ax: Existing axes to draw on; new figure created when ``None``.
+        :type ax: :class:`matplotlib.axes.Axes` or None
+        :param cmap: Colormap. Defaults to ``'twilight'``.
+        :type cmap: str or :class:`matplotlib.colors.Colormap`
+        :param label_latex: LaTeX symbol for colorbar label.
+                            Defaults to ``r'\\Sigma'``.
+        :type label_latex: str
+        :param unit_latex: LaTeX unit string for colorbar.  Auto-read when
+                           ``None``.
+        :type unit_latex: str or None
+        :param aspect_equal: Set equal aspect ratio. Defaults to ``True``.
+        :type aspect_equal: bool
+        :param kwargs: Extra keyword arguments forwarded to
+                       :func:`~matplotlib.pyplot.pcolormesh`.
+        :returns: Tuple ``(ax, im, projected_data)``.
+        :rtype: tuple
         """
         projected_data, xspace, yspace = self.snap.project(
             data=data,
@@ -184,10 +296,40 @@ def scalar_map(f : u.unyt_array | ArrayLike,
                 unit_latex: str | None = None,
                 aspect_equal: bool = True,
                 **kwargs):
+    """Render a 2-D scalar field on a regular grid as a log-scale colour map.
+
+    Computes ``log₁₀(f)``, auto-selects ``vmin``/``vmax`` rounded to the
+    nearest half-integer, and plots using :func:`~matplotlib.pyplot.pcolormesh`.
+    A colorbar labelled ``$\\log[symbol/unit]$`` is added automatically.
+
+    :param f: 2-D scalar data of shape ``(nx, ny)``.  A :class:`unyt.unyt_array`
+              is recommended for automatic unit labelling.
+    :type f: :class:`unyt.unyt_array` or ArrayLike
+    :param xspace: 1-D array of x-coordinates (length ``nx``).
+    :type xspace: :class:`unyt.unyt_array` or ArrayLike
+    :param yspace: 1-D array of y-coordinates (length ``ny``).
+    :type yspace: :class:`unyt.unyt_array` or ArrayLike
+    :param ax: Existing axes to draw on; a new figure is created when ``None``.
+    :type ax: :class:`matplotlib.axes.Axes` or None
+    :param cmap: Colormap.  Defaults to ``'twilight'``.
+    :type cmap: str or :class:`matplotlib.colors.Colormap`
+    :param label_latex: LaTeX symbol for the colorbar (e.g. ``r'\\Sigma'``).
+    :type label_latex: str
+    :param unit_latex: LaTeX unit string.  Auto-read from ``f.units`` when
+                       ``None``.
+    :type unit_latex: str or None
+    :param aspect_equal: Set equal aspect ratio on the axes.
+                         Defaults to ``True``.
+    :type aspect_equal: bool
+    :param kwargs: Additional keyword arguments forwarded to
+                   :func:`~matplotlib.pyplot.pcolormesh` (e.g. ``vmin``,
+                   ``vmax`` to override auto-scaling).
+    :returns: Tuple ``(ax, im)`` — the axes and the
+              :class:`~matplotlib.collections.QuadMesh`.
+    :rtype: tuple[:class:`matplotlib.axes.Axes`,
+                  :class:`matplotlib.collections.QuadMesh`]
     """
-    A general visualisation for any scalar field data.
-    """
-    
+
     # ensure we have an Axes
     if ax is None:
         fig, ax = plt.subplots()

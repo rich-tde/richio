@@ -30,36 +30,79 @@ from scipy.spatial import Voronoi
 # ---------------------------------------------------------------------------- #
 
 def delta(M, gamma=5/3):
+    """Dimensionless entropy jump across a shock of Mach number *M*.
+
+    :param M: Mach number upstream of the shock (M ≥ 1).
+    :param gamma: Adiabatic index.  Defaults to 5/3.
+    :returns: Dimensionless entropy jump δ.
+    :rtype: float or array-like
+    """
     R = 1/((gamma - 1)/(gamma + 1) + 2/(gamma + 1)/M**2) # R = rho2/rho1
     delta = 2/(gamma*(gamma - 1) * M**2 * R) * ((2*gamma*M**2 - (gamma - 1))/(gamma + 1) - R**gamma)
     return delta
 
 def R2M(R, gamma=5/3):
-    """Mach number from compression ratio rho2/rho1 (Rankine-Hugoniot)."""
+    """Mach number from density compression ratio ρ₂/ρ₁ (Rankine-Hugoniot).
+
+    :param R: Density ratio ρ₂/ρ₁ across the shock.
+    :param gamma: Adiabatic index.  Defaults to 5/3.
+    :returns: Mach number M ≥ 1.
+    :rtype: float or array-like
+    """
     return 1/np.sqrt((gamma + 1)/(2*R) - (gamma - 1)/2)
 rho2rho1M = R2M  # alias
 
 def M2R(M, gamma=5/3):
-    """Compression ratio rho2/rho1 from Mach number (Rankine-Hugoniot)."""
+    """Density compression ratio ρ₂/ρ₁ from Mach number (Rankine-Hugoniot).
+
+    :param M: Mach number upstream of the shock.
+    :param gamma: Adiabatic index.  Defaults to 5/3.
+    :returns: Density ratio ρ₂/ρ₁.
+    :rtype: float or array-like
+    """
     return (gamma + 1)*M**2 / ((gamma - 1)*M**2 + 2)
 Mrho2rho1 = M2R  # alias
 
 def MT2T1(M, gamma=5/3):
-    """Temperature jump T2/T1 from Mach number."""
+    """Temperature jump T₂/T₁ across a shock of Mach number *M*.
+
+    :param M: Upstream Mach number.
+    :param gamma: Adiabatic index.  Defaults to 5/3.
+    :returns: Temperature ratio T₂/T₁.
+    :rtype: float or array-like
+    """
     return (2*gamma*M**2 - (gamma - 1)) * ((gamma - 1)*M**2 + 2) / ((gamma + 1)**2 * M**2)
 
 def MP2P1(M, gamma=5/3):
-    """Pressure jump P2/P1 from Mach number."""
+    """Pressure jump P₂/P₁ across a shock of Mach number *M*.
+
+    :param M: Upstream Mach number.
+    :param gamma: Adiabatic index.  Defaults to 5/3.
+    :returns: Pressure ratio P₂/P₁.
+    :rtype: float or array-like
+    """
     return (2*gamma*M**2)/(gamma + 1) - (gamma - 1)/(gamma + 1)
 
 def T2T1M(T2_T1, gamma):
-    """Mach number from temperature jump T2/T1."""
+    """Mach number inferred from temperature jump T₂/T₁.
+
+    :param T2_T1: Observed temperature ratio across the shock.
+    :param gamma: Adiabatic index.
+    :returns: Mach number M.
+    :rtype: float or array-like
+    """
     a = 2 * gamma * (gamma - 1)
     minusb = gamma * 2 - 6 * gamma + T2_T1 * (gamma + 1)**2 + 1
     return np.sqrt((minusb + np.sqrt(minusb**2 + 8 * a * (gamma - 1))) / (2 * a))
 
 def P2P1M(P2_P1, gamma):
-    """Mach number from pressure jump P2/P1."""
+    """Mach number inferred from pressure jump P₂/P₁.
+
+    :param P2_P1: Observed pressure ratio across the shock.
+    :param gamma: Adiabatic index.
+    :returns: Mach number M.
+    :rtype: float or array-like
+    """
     return np.sqrt((P2_P1 * (gamma + 1) + gamma - 1) / (2 * gamma))
 
 
@@ -68,18 +111,22 @@ def P2P1M(P2_P1, gamma):
 # ---------------------------------------------------------------------------- #
 
 def build_voronoi(snap):
-    """Build Voronoi adjacency graph from snap cell centres.
+    """Build a Voronoi adjacency graph from snapshot cell centres.
 
-    Parameters
-    ----------
-    snap : richio Snapshot
+    Constructs the full Voronoi tessellation via
+    :class:`scipy.spatial.Voronoi` and encodes the cell-neighbour relation as
+    a Compressed Sparse Row (CSR) structure for efficient traversal in the
+    numba kernels.
 
-    Returns
-    -------
-    SimpleNamespace with:
-        positions     : float64 (N, 3)  cell centres in code_length
-        neighbor_data : int32            flat adjacency list (CSR values)
-        neighbor_ptr  : int32            CSR row pointers, length N+1
+    :param snap: Loaded RICH snapshot providing ``X``, ``Y``, ``Z``
+                 coordinates.
+    :type snap: :class:`~richio.data.Snapshot`
+    :returns: Namespace with attributes:
+
+              * ``positions`` — ``float64 (N, 3)`` cell centres in code_length.
+              * ``neighbor_data`` — ``int32`` flat adjacency list (CSR values).
+              * ``neighbor_ptr`` — ``int32`` CSR row-pointer array, length N+1.
+    :rtype: :class:`types.SimpleNamespace`
     """
     positions = np.stack([snap.X.v, snap.Y.v, snap.Z.v], axis=-1)
 
@@ -111,14 +158,22 @@ def build_voronoi(snap):
 
 @njit(cache=True)
 def _next_cell(positions, neighbor_data, neighbor_ptr, idx, dx, dy, dz):
-    """Exact ray–face crossing on the Voronoi graph.
+    """JIT kernel: find the next Voronoi cell along a ray (Springel 2010 §2).
 
-    The face between generators xᵢ and xⱼ is the perpendicular bisector plane
-    with normal n = xⱼ−xᵢ.  A ray from xᵢ in direction d̂ hits it at
-        t = |n|² / (2 · n·d̂)
-    We return the neighbour with the smallest positive t, or -1 at a boundary.
+    The perpendicular-bisector face between generators xᵢ and xⱼ has normal
+    **n** = xⱼ − xᵢ.  A ray from xᵢ in direction **d̂** crosses it at
+    t = |**n**|² / (2 **n**·**d̂**).  Returns the neighbour with the smallest
+    positive *t*, or ``-1`` at a domain boundary.
 
-    Source: Springel (2010) MNRAS 401, §2.
+    :param positions: Cell centre coordinates, shape ``(N, 3)``.
+    :param neighbor_data: CSR flat adjacency array.
+    :param neighbor_ptr: CSR row-pointer array, length N+1.
+    :param idx: Index of the current cell.
+    :param dx: x-component of the ray direction (need not be normalised).
+    :param dy: y-component.
+    :param dz: z-component.
+    :returns: Global index of the neighbouring cell the ray enters, or ``-1``.
+    :rtype: int
     """
     xi = positions[idx, 0];  yi = positions[idx, 1];  zi = positions[idx, 2]
     norm = _math.sqrt(dx*dx + dy*dy + dz*dz)
@@ -143,10 +198,25 @@ def _next_cell(positions, neighbor_data, neighbor_ptr, idx, dx, dy, dz):
 @njit(cache=True)
 def _condition3_kernel(positions, neighbor_data, neighbor_ptr,
                        candidates, T_np, P_np, ds_np, DlogT_min, DlogP_min):
-    """Check Schaal+14 condition 3 for every candidate cell (numba kernel).
+    """JIT kernel: evaluate Schaal+14 condition 3 for candidate shock cells.
 
-    ds_np : (N, 3) pre-normalised shock directions for each candidate.
-    Returns bool array of length N.
+    Traces a ray in ±**ds** from each candidate to find the pre- and
+    post-shock cells, then checks whether the T and P jumps exceed the given
+    thresholds on a log₁₀ scale.
+
+    :param positions: Cell centres, shape ``(N, 3)``.
+    :param neighbor_data: CSR flat adjacency array.
+    :param neighbor_ptr: CSR row-pointer array, length N+1.
+    :param candidates: Indices of cells satisfying conditions 1 & 2,
+                       shape ``(M,)``.
+    :param T_np: Proxy temperature array (P/ρ), shape ``(N,)``.
+    :param P_np: Pressure array, shape ``(N,)``.
+    :param ds_np: Pre-normalised shock direction for each candidate,
+                  shape ``(M, 3)``.
+    :param DlogT_min: Minimum log₁₀(T₂/T₁) threshold (Schaal+14: 0.11).
+    :param DlogP_min: Minimum log₁₀(P₂/P₁) threshold (Schaal+14: 0.27).
+    :returns: Boolean array of length *M*; ``True`` for confirmed shock cells.
+    :rtype: :class:`numpy.ndarray` (bool)
     """
     result = np.zeros(len(candidates), dtype=np.bool_)
     for k in range(len(candidates)):
@@ -171,10 +241,26 @@ def _condition3_kernel(positions, neighbor_data, neighbor_ptr,
 @njit(cache=True)
 def _ray_tracer(positions, neighbor_data, neighbor_ptr, shock_mask,
                 idx_shock, idx_cell, divV_shock, ds_shock, sign, max_steps):
-    """Walk along ±ds until exiting the shock zone.
+    """JIT kernel: walk along ±**ds** from a shock cell until leaving the zone.
 
-    sign = +1 → pre-shock (along ds),  sign = -1 → post-shock.
-    Returns global cell index or -1 (rejected).
+    Steps cell-by-cell through the Voronoi graph in the ``sign * ds`` direction
+    until a non-shock cell is reached (returned) or the walk is rejected
+    (returns ``-1``).  Rejects are triggered by unphysical divergence increase
+    or a reversed shock direction.
+
+    :param positions: Cell centres, shape ``(N, 3)``.
+    :param neighbor_data: CSR flat adjacency array.
+    :param neighbor_ptr: CSR row-pointer array, length N+1.
+    :param shock_mask: Boolean mask, shape ``(N,)``; ``True`` for shock cells.
+    :param idx_shock: Sorted indices of shock cells, shape ``(S,)``.
+    :param idx_cell: Local index within *idx_shock* for the starting cell.
+    :param divV_shock: Velocity divergence for each shock cell, shape ``(S,)``.
+    :param ds_shock: Shock direction for each shock cell, shape ``(S, 3)``.
+    :param sign: ``+1`` to walk toward the pre-shock side; ``-1`` toward
+                 post-shock.
+    :param max_steps: Maximum number of Voronoi hops before giving up.
+    :returns: Global cell index of the first non-shock cell found, or ``-1``.
+    :rtype: int
     """
     current = idx_shock[idx_cell]
     dx = sign * ds_shock[idx_cell, 0]
@@ -210,9 +296,29 @@ def _shock_surface_kernel(positions, neighbor_data, neighbor_ptr,
                           T_np, P_np, rho_np,
                           shock_mask, idx_shock, divV_shock, ds_shock,
                           gamma, max_steps=500):
-    """Full shock-surface finder — fully JIT-compiled (Schaal+14 §2.2).
+    """JIT kernel: full shock-surface finder (Schaal+14 §2.2).
 
-    Returns (M_T, M_P, M_rho, surf_idx, pre_idx, post_idx).
+    For each shock-zone cell traces pre- and post-shock rays via
+    :func:`_ray_tracer`, checks that the temperature jump is ≥ 1, and
+    computes three independent Mach-number estimates from the T, P, and ρ
+    Rankine-Hugoniot relations.
+
+    :param positions: Cell centres, shape ``(N, 3)``.
+    :param neighbor_data: CSR flat adjacency array.
+    :param neighbor_ptr: CSR row-pointer array, length N+1.
+    :param T_np: Proxy temperature P/ρ, shape ``(N,)``.
+    :param P_np: Pressure, shape ``(N,)``.
+    :param rho_np: Density, shape ``(N,)``.
+    :param shock_mask: Boolean shock-zone mask, shape ``(N,)``.
+    :param idx_shock: Sorted shock-zone cell indices, shape ``(S,)``.
+    :param divV_shock: Velocity divergence for shock cells, shape ``(S,)``.
+    :param ds_shock: Shock direction for shock cells, shape ``(S, 3)``.
+    :param gamma: Adiabatic index.
+    :param max_steps: Maximum ray-tracing hops. Defaults to ``500``.
+    :returns: Tuple ``(M_T, M_P, M_rho, surf_idx, pre_idx, post_idx)`` — the
+              three Mach arrays and the surface / pre- / post-shock cell
+              indices, each of length *M* (accepted surface cells).
+    :rtype: tuple
     """
     n = len(idx_shock)
     M_T    = np.empty(n, np.float64);  M_P   = np.empty(n, np.float64)
@@ -265,21 +371,24 @@ def _shock_surface_kernel(positions, neighbor_data, neighbor_ptr,
 # ---------------------------------------------------------------------------- #
 
 def find_shock_zone(snap, vor, gamma=5/3):
-    """Identify shock-zone cells via three Schaal+14 criteria.
+    """Identify shock-zone cells via the three Schaal+14 conditions.
 
-    Condition 1: converging flow (∇·v < 0)
-    Condition 2: temperature gradient aligned with pressure gradient
-    Condition 3: measurable T and P jump across the face
+    * **Condition 1** — converging flow: ∇·v < 0.
+    * **Condition 2** — temperature gradient aligned with pressure gradient:
+      ∇T · ∇P > 0.
+    * **Condition 3** — measurable T and P jump across the Voronoi face
+      (evaluated by :func:`_condition3_kernel`; thresholds log₁₀ΔT ≥ 0.11,
+      log₁₀ΔP ≥ 0.27).
 
-    Parameters
-    ----------
-    snap  : richio Snapshot (must provide DrhoDx/y/z for grad_T)
-    vor   : result of build_voronoi(snap)
-    gamma : adiabatic index
-
-    Returns
-    -------
-    shock_zone : bool ndarray, shape (N,)
+    :param snap: Loaded RICH snapshot.  Must provide ``DrhoDx``, ``DrhoDy``,
+                 ``DrhoDz`` for the temperature-gradient calculation.
+    :type snap: :class:`~richio.data.Snapshot`
+    :param vor: Voronoi graph from :func:`build_voronoi`.
+    :type vor: :class:`types.SimpleNamespace`
+    :param gamma: Adiabatic index.  Defaults to 5/3.
+    :type gamma: float
+    :returns: Boolean array of shape ``(N,)``; ``True`` for shock-zone cells.
+    :rtype: :class:`numpy.ndarray` (bool)
     """
     # Condition 1
     cond1 = snap.divV.v < 0
@@ -320,27 +429,31 @@ def find_shock_zone(snap, vor, gamma=5/3):
 # ---------------------------------------------------------------------------- #
 
 def find_shock_surface(snap, vor, shock_zone, gamma=5/3):
-    """Find shock-surface cells and estimate Mach numbers (Schaal+14 §2.2).
+    """Locate shock-surface cells and estimate Mach numbers (Schaal+14 §2.2).
 
-    For each shock-zone cell, traces rays along ±ds until exiting the zone,
-    then computes the Rankine-Hugoniot Mach number from the T, P, ρ jumps.
+    For each cell in the shock zone, traces rays in ±**ds** until exiting the
+    zone, then computes three independent Rankine-Hugoniot Mach-number estimates
+    from the T, P, and ρ jumps between the pre- and post-shock cells.
 
-    Parameters
-    ----------
-    snap       : richio Snapshot
-    vor        : result of build_voronoi(snap)
-    shock_zone : bool array from find_shock_zone()
-    gamma      : adiabatic index
+    :param snap: Loaded RICH snapshot providing ``P``, ``rho``, ``divV``, and
+                 gradient fields.
+    :type snap: :class:`~richio.data.Snapshot`
+    :param vor: Voronoi graph from :func:`build_voronoi`.
+    :type vor: :class:`types.SimpleNamespace`
+    :param shock_zone: Boolean shock-zone mask from :func:`find_shock_zone`,
+                       shape ``(N,)``.
+    :type shock_zone: :class:`numpy.ndarray` (bool)
+    :param gamma: Adiabatic index.  Defaults to 5/3.
+    :type gamma: float
+    :returns: Namespace with attributes:
 
-    Returns
-    -------
-    SimpleNamespace with:
-        surface_mask : bool (N,)  — global mask for shock surface cells
-        pre_mask     : bool (N,)  — mask for pre-shock cells
-        post_mask    : bool (N,)  — mask for post-shock cells
-        mach_T       : float (M,) — Mach from temperature jump
-        mach_P       : float (M,) — Mach from pressure jump
-        mach_rho     : float (M,) — Mach from density jump
+              * ``surface_mask`` — ``bool (N,)`` global mask for shock-surface cells.
+              * ``pre_mask``     — ``bool (N,)`` mask for pre-shock cells.
+              * ``post_mask``    — ``bool (N,)`` mask for post-shock cells.
+              * ``mach_T``       — ``float (M,)`` Mach number from temperature jump.
+              * ``mach_P``       — ``float (M,)`` Mach number from pressure jump.
+              * ``mach_rho``     — ``float (M,)`` Mach number from density jump.
+    :rtype: :class:`types.SimpleNamespace`
     """
     P_v   = snap.P.v
     rho_v = snap.rho.v

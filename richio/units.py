@@ -26,9 +26,31 @@ _MISSING = object()  # sentinel for optional default in get_unit()
 
 
 class Units:
-    """
-    Container for RICH simulation units. Mass unit is solar mass, length solar
-    radius, and gravitational constant G = 1 (such that the time unit is also fixed).
+    """Container for RICH simulation code units.
+
+    The code unit system is defined by:
+
+    * **Mass** — 1 solar mass (M☉ ≈ 2 × 10³⁰ kg)
+    * **Length** — 1 solar radius (R☉ ≈ 7 × 10⁸ m)
+    * **G = 1** (fixes the time unit, t_code ≈ 1603 s)
+
+    All named unit expressions are accessible as attributes (e.g.
+    ``units.lscale``, ``units.tscale``) and are also registered in a custom
+    ``'rich'`` :class:`unyt.unit_systems.UnitSystem` so that
+    ``qty.in_base('rich')`` works on any :class:`unyt.unyt_array`.
+
+    Attributes
+    ----------
+    mscale : :class:`unyt.Unit`
+        Code mass unit (~ 1 M☉).
+    lscale : :class:`unyt.Unit`
+        Code length unit (~ 1 R☉).
+    tscale : :class:`unyt.Unit`
+        Code time unit (~ 1603 s, derived from G = 1).
+    system : :class:`unyt.unit_systems.UnitSystem`
+        The ``'rich'`` unit system registered with unyt.
+    registry : :class:`unyt.UnitRegistry`
+        Custom registry containing the three code-unit base definitions.
     """
 
     def __init__(self):
@@ -91,16 +113,17 @@ class Units:
                 self._unit_per_field[npy_name] = _unit_keys[npy_unit_key]
 
     def get_unit(self, key: str, default=_MISSING):
-        """
-        Return the unit associated with a RICH output field.
+        """Return the unit associated with a RICH output field.
 
-        Parameters
-        ----------
-        key : str
-            Field name (canonical or alias).
-        default : optional
-            Value to return when the key is unknown. If omitted, raises
-            ValueError for unknown keys.
+        :param key: Canonical field name (e.g. ``"Density"``) or alias
+                    (e.g. ``"density"``).
+        :type key: str
+        :param default: Value to return when *key* is not found in the
+                        registry.  If omitted, a :exc:`ValueError` is raised
+                        for unknown keys.
+        :returns: The :class:`unyt.Unit` (or unit expression) for the field,
+                  or *default* if provided and the key is unknown.
+        :raises ValueError: If *key* is unknown and no *default* was supplied.
         """
         if key in self._unit_per_field:
             unit = self._unit_per_field[key]
