@@ -396,19 +396,20 @@ class Snapshot:
         :rtype: tuple[:class:`unyt.unyt_array`, :class:`unyt.unyt_array`,
                       :class:`unyt.unyt_array`]
         """
-        grid_data, i, xspace, yspace, zspace = self.to_grid(data, res, 
-                X, Y, Z, box_size, selection)
+        i, xspace, yspace, zspace = self.to_grid(res, X, Y, Z, box_size, selection)
 
-        dz = zspace[1:] - zspace[:-1]                                                 #PM: dz = (z1 - z0) / (nz - 1)
-        projected_data = np.sum(grid_data[:-1, :-1, :-1] * dz, axis=-1).in_base(unit_system)#PM: grid_data[:, :, :-1]
+        data = self._get_data(data)
+        grid_data = data[i]
+
+        dz = zspace[1:] - zspace[:-1]  # PM: dz = (z1 - z0) / (nz - 1)
+        projected_data = np.sum(grid_data[:-1, :-1, :-1] * dz, axis=-1).in_base(
+            unit_system
+        )  # PM: grid_data[:, :, :-1]
 
         return projected_data, xspace, yspace
 
-
-
     def to_grid(
         self,
-        data: str | ArrayLike,
         res: int | ArrayLike,
         X: str | ArrayLike = "X",
         Y: str | ArrayLike = "Y",
@@ -423,9 +424,6 @@ class Snapshot:
         k-d tree (nearest-neighbour) to assign each grid point the value of its
         closest cell.
 
-        :param data: Field to interpolate — field name string or array of
-                     shape ``(N,)``.
-        :type data: str or ArrayLike
         :param res: Grid resolution — single integer for a cubic grid or a
                     three-element sequence ``(nx, ny, nz)``.
         :type res: int or ArrayLike
@@ -452,7 +450,6 @@ class Snapshot:
         :rtype: tuple
         """
         # Fetch data
-        data = self._get_data(data)
         X = self._get_data(X)
         Y = self._get_data(Y)
         Z = self._get_data(Z)
@@ -495,11 +492,7 @@ class Snapshot:
 
         i = _kdtree_interpolate(coords=coords, grid_coords=grid_coords)
 
-        grid_data = data[i]
-
-        return grid_data, i, xspace, yspace, zspace
-
-
+        return i, xspace, yspace, zspace
 
     def slice(
         self, 
