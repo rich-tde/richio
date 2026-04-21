@@ -19,10 +19,10 @@ import warnings
 
 import h5py
 import numpy as np
-import unyt as u
 from numpy.typing import ArrayLike
 from rich.console import Console
 from rich.table import Table
+import unyt as u
 
 from richio.config import FIELD_REGISTRY
 from richio.plots import SnapshotPlotter
@@ -39,11 +39,7 @@ def _build_h5_aliases():
     :returns: Mapping from canonical HDF5 key to its list of aliases.
     :rtype: dict[str, list[str]]
     """
-    return {
-        k: v["aliases"]
-        for k, v in FIELD_REGISTRY.items()
-        if not v.get("npy_only", False)
-    }
+    return {k: v["aliases"] for k, v in FIELD_REGISTRY.items() if not v.get("npy_only", False)}
 
 
 def _build_npy_aliases():
@@ -221,7 +217,7 @@ class Snapshot:
                 warnings.simplefilter("ignore")
                 unit = units.get_unit(field, default=None)
             info[field] = {
-                "unit":    unit,
+                "unit": unit,
                 "aliases": self._field_aliases.get(field, []),
             }
         return info
@@ -252,10 +248,10 @@ class Snapshot:
 
         # ---- Metadata table ------------------------------------------------
         meta_table = Table(show_header=False, box=None, padding=(0, 1))
-        meta_table.add_column(style="bold cyan",  no_wrap=True)
+        meta_table.add_column(style="bold cyan", no_wrap=True)
         meta_table.add_column(style="white")
 
-        meta_table.add_row("Path",            str(self.path))
+        meta_table.add_row("Path", str(self.path))
         meta_table.add_row("Snapshot number", str(self.snapnum))
 
         for attr, label in [("time", "Time"), ("box", "Box size"), ("cycle", "Cycle")]:
@@ -285,8 +281,8 @@ class Snapshot:
             show_lines=False,
             header_style="bold magenta",
         )
-        field_table.add_column("Field",   style="cyan",  no_wrap=True)
-        field_table.add_column("Unit",    style="green")
+        field_table.add_column("Field", style="cyan", no_wrap=True)
+        field_table.add_column("Unit", style="green")
         if show_aliases:
             field_table.add_column("Aliases", style="dim")
 
@@ -316,10 +312,7 @@ class Snapshot:
         console.print(f"Total: [bold]{len(self.keys())}[/bold] fields")
         console.rule()
 
-
-    def _get_data(
-        self, data: str | ArrayLike
-        ) -> u.unyt_array:
+    def _get_data(self, data: str | ArrayLike) -> u.unyt_array:
         """Resolve *data* to a :class:`unyt.unyt_array` with physical units.
 
         Accepts a field name string (looked up via :meth:`__getitem__`), a
@@ -347,7 +340,6 @@ class Snapshot:
             )
 
         return data
-
 
     def project(
         self,
@@ -481,32 +473,37 @@ class Snapshot:
             nx = ny = nz = res
 
         # Make Euclidean grid
-        xspace = np.linspace(x0, x1, nx, endpoint=endpoint)  # disable endpoints by default such that dz = (z1-z0)/res instead of (z1-z0)/(res-1)
-        yspace = np.linspace(y0, y1, ny, endpoint=endpoint)  #PM: endpoint=True
-        zspace = np.linspace(z0, z1, nz, endpoint=endpoint)  # TODO: add an option to use np.geomspace
+        # disable endpoints by default such that dz = (z1-z0)/res instead of (z1-z0)/(res-1)
+        # PM: endpoint=True
+        # TODO: add an option to use np.geomspace
+        xspace = np.linspace(x0, x1, nx, endpoint=endpoint)
+        yspace = np.linspace(y0, y1, ny, endpoint=endpoint)
+        zspace = np.linspace(z0, z1, nz, endpoint=endpoint)
 
         grid_x, grid_y, grid_z = np.meshgrid(xspace, yspace, zspace, indexing="ij")
 
         coords = np.stack([X, Y, Z], axis=-1)  # coordinates of the particles
-        grid_coords = np.stack([grid_x, grid_y, grid_z], axis=-1)  # coordinates of the grid (query points)
+        grid_coords = np.stack(
+            [grid_x, grid_y, grid_z], axis=-1
+        )  # coordinates of the grid (query points)
 
         i = _kdtree_interpolate(coords=coords, grid_coords=grid_coords)
 
         return i, xspace, yspace, zspace
 
     def slice(
-        self, 
-        data: str | ArrayLike, 
-        res: int | ArrayLike, 
-        X: str | ArrayLike = "X", 
-        Y: str | ArrayLike = "Y", 
+        self,
+        data: str | ArrayLike,
+        res: int | ArrayLike,
+        X: str | ArrayLike = "X",
+        Y: str | ArrayLike = "Y",
         Z: str | ArrayLike = "Z",
         plane: str = "xy",
         slice_coord: float | u.array.unyt_quantity = 0,
         box_size: ArrayLike | None = None,
         selection: ArrayLike | None = None,
         unit_system: str = "cgs",
-        volume_selection: bool = True, # select based on volume to speed up calculation
+        volume_selection: bool = True,  # select based on volume to speed up calculation
     ):
         """Make a slice of the simulation grid. Outputs the intepolated data and
         the indices.
@@ -563,7 +560,7 @@ class Snapshot:
         Z = self._get_data(Z)
 
         if volume_selection:
-            volume = self._get_data('volume')
+            volume = self._get_data("volume")
 
         if selection is not None:
             data = data[selection]
@@ -591,7 +588,7 @@ class Snapshot:
                 box_size *= units.lscale
 
             if len(box_size) == 6:
-                x0, y0, z0, x1, y1, z1 = box_size       # A 3d box
+                x0, y0, z0, x1, y1, z1 = box_size  # A 3d box
                 x0, y0, z0 = _parse_plane(plane, x0, y0, z0)
                 x1, y1, z1 = _parse_plane(plane, x1, y1, z1)
             elif len(box_size) == 4:
@@ -604,11 +601,12 @@ class Snapshot:
             slice_coord *= units.lscale
 
         # x_slice, y_slice, z_slice should only have one that is not None
-        X, Y, Z = _parse_plane(plane, X, Y, Z)      # redefine x y to be the plane, z the sliced direction
+        # redefine x y to be the plane, z the sliced direction
+        X, Y, Z = _parse_plane(plane, X, Y, Z)
 
         # Select only cells in proximity
         if volume_selection:
-            mask = np.abs(Z - slice_coord) < volume**(1/3)
+            mask = np.abs(Z - slice_coord) < volume ** (1 / 3)
             # assuming spherical cells, V^(1/3)=(4pi/3)^(1/3)R ~ 1.6R, we don't
             # include the factor such that if V is not round enough we won't
             # lose too much accuracy
@@ -617,7 +615,6 @@ class Snapshot:
             Y = Y[mask]
             Z = Z[mask]
 
-
         # Make Euclidean grid
         xspace = np.linspace(x0, x1, nx, endpoint=False)
         yspace = np.linspace(y0, y1, ny, endpoint=False)
@@ -625,9 +622,13 @@ class Snapshot:
 
         grid_x, grid_y, grid_z = np.meshgrid(xspace, yspace, zspace, indexing="ij")
 
-        coords = np.stack([X, Y, Z], axis=-1)  # coordinates of the particles 
-        grid_coords = np.stack([grid_x, grid_y, grid_z], axis=-1)  # coordinates of the grid (query points)
-        grid_coords = np.squeeze(grid_coords)            # remove extra dimension (nx, ny, 1, 3) to (nx, ny, 3)
+        coords = np.stack([X, Y, Z], axis=-1)  # coordinates of the particles
+        grid_coords = np.stack(
+            [grid_x, grid_y, grid_z], axis=-1
+        )  # coordinates of the grid (query points)
+        grid_coords = np.squeeze(
+            grid_coords
+        )  # remove extra dimension (nx, ny, 1, 3) to (nx, ny, 3)
 
         i = _kdtree_interpolate(coords=coords, grid_coords=grid_coords)
 
@@ -662,7 +663,7 @@ class SnapshotH5(Snapshot):
 
     def __init__(self, path):
         self.path = path
-        self.rank = self._get_rank()        # after setting path
+        self.rank = self._get_rank()  # after setting path
         self.f = h5py.File(self.path, "r")  # allow easy access to the h5py file
 
         super().__init__(path)  # inherit all methods from parent class
@@ -682,7 +683,7 @@ class SnapshotH5(Snapshot):
                 if "rank" in key:
                     rank = int(key[4:])
                     if maxrank < rank:
-                        maxrank = rank # get the max rank
+                        maxrank = rank  # get the max rank
 
         maxrank += 1  # number of rank (starts from 1) is max rank (starts from 0) + 1
         return maxrank
@@ -759,18 +760,20 @@ class SnapshotH5(Snapshot):
         :returns: Sorted list of canonical field names.
         :rtype: list[str]
         """
+
         def _list_group(f, keys, prefix="") -> list:
 
             # recursively list all datasets
             for key in list(f.keys()):
-
                 if prefix == "":
                     full_key = key
                 else:
                     full_key = prefix + "/" + key
 
                 if isinstance(f[key], h5py._hl.dataset.Dataset):
-                    key_norank = re.sub(r"rank\d+/", "", full_key) # match and remove the 'rank<number>/' prefix
+                    key_norank = re.sub(
+                        r"rank\d+/", "", full_key
+                    )  # match and remove the 'rank<number>/' prefix
                     if key_norank not in keys:
                         keys.append(key_norank)
                 elif isinstance(f[key], h5py._hl.group.Group):
@@ -894,8 +897,6 @@ class SnapshotNPY(Snapshot):
         return length
 
 
-
-
 def _parse_plane(plane, x, y, z):
     """Permute ``(x, y, z)`` so that the first two axes match *plane*.
 
@@ -918,11 +919,11 @@ def _parse_plane(plane, x, y, z):
     """
 
     def _parse_xyz(char, x, y, z):
-        if char == 'x':
+        if char == "x":
             return x
-        elif char == 'y':
+        elif char == "y":
             return y
-        elif char == 'z':
+        elif char == "z":
             return z
 
     x1 = _parse_xyz(plane[0], x, y, z)
@@ -938,7 +939,6 @@ def _parse_plane(plane, x, y, z):
         raise Exception(f"Plane {plane} is unrecognizable.")
 
     return x1, x2, x3
-
 
 
 def _kdtree_interpolate(coords, grid_coords, k=1, eps=0, workers=1):

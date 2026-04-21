@@ -60,7 +60,7 @@ FIELD_REGISTRY = {
         "aliases": ["time", "t", "tfb", "simulation_time", "current_time"],
         "unit": "tscale",
         "npy_name": "tfb",
-        "npy_unit": "tfb_unit",   # fallback time for NPY (Mbh=1e4, Mstar=0.5, Rstar=0.47)
+        "npy_unit": "tfb_unit",  # fallback time for NPY (Mbh=1e4, Mstar=0.5, Rstar=0.47)
     },
     "Cycle": {
         "aliases": ["cycle", "step", "iteration"],

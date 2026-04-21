@@ -57,14 +57,14 @@ class Units:
         reg = UnitRegistry(unit_system="cgs")
 
         # base_value default in mks
-        reg.add("code_mass",   base_value=2e30,    dimensions=mass,   tex_repr=r"M_\odot")
-        reg.add("code_length", base_value=7e8,     dimensions=length, tex_repr=r"R_\odot")
-        reg.add("code_time",   base_value=1603.0,  dimensions=time,   tex_repr=r"t_\text{code}")
+        reg.add("code_mass", base_value=2e30, dimensions=mass, tex_repr=r"M_\odot")
+        reg.add("code_length", base_value=7e8, dimensions=length, tex_repr=r"R_\odot")
+        reg.add("code_time", base_value=1603.0, dimensions=time, tex_repr=r"t_\text{code}")
 
         # Base units
-        self.mscale = Unit("code_mass",   registry=reg)  # ~ solar mass 1.988e33 g
+        self.mscale = Unit("code_mass", registry=reg)  # ~ solar mass 1.988e33 g
         self.lscale = Unit("code_length", registry=reg)  # ~ solar radius 6.955e10 cm
-        self.tscale = Unit("code_time",   registry=reg)  # G ≈ 1; ≈ 1592 s
+        self.tscale = Unit("code_time", registry=reg)  # G ≈ 1; ≈ 1592 s
 
         # The rich unit system
         rus = UnitSystem(
@@ -82,24 +82,24 @@ class Units:
         # Add a new key here if you need a new unit expression.
         # ------------------------------------------------------------------
         _unit_keys = {
-            "lscale":              self.lscale,
-            "tscale":              self.tscale,
-            "mscale":              self.mscale,
-            "dimensionless":       u.Dimensionless,
-            "density":             rus["density"],
-            "pressure":            rus["pressure"],
-            "temperature":         rus["temperature"],
-            "volume":              rus["volume"],
-            "velocity":            rus["velocity"],
-            "specific_energy":     rus["energy"] / self.mscale,
-            "dissipation":         rus["energy"] / self.lscale**3 / self.tscale,
-            "pressure_gradient":   rus["pressure"] / self.lscale,
-            "density_gradient":    rus["density"]  / self.lscale,
-            "sie_gradient":        rus["energy"]   / self.mscale / self.tscale,
+            "lscale": self.lscale,
+            "tscale": self.tscale,
+            "mscale": self.mscale,
+            "dimensionless": u.Dimensionless,
+            "density": rus["density"],
+            "pressure": rus["pressure"],
+            "temperature": rus["temperature"],
+            "volume": rus["volume"],
+            "velocity": rus["velocity"],
+            "specific_energy": rus["energy"] / self.mscale,
+            "dissipation": rus["energy"] / self.lscale**3 / self.tscale,
+            "pressure_gradient": rus["pressure"] / self.lscale,
+            "density_gradient": rus["density"] / self.lscale,
+            "sie_gradient": rus["energy"] / self.mscale / self.tscale,
             "velocity_divergence": rus["velocity"] / self.lscale,
-            "specific_entropy":    rus["energy"]   / rus["temperature"] / self.mscale,
-            "tfb_unit":            2.577726 * u.day,  # NPY fallback time unit
-            "unknown":             1,
+            "specific_entropy": rus["energy"] / rus["temperature"] / self.mscale,
+            "tfb_unit": 2.577726 * u.day,  # NPY fallback time unit
+            "unknown": 1,
         }
 
         # Build field→unit mapping from the central registry (one place to maintain)
@@ -128,7 +128,7 @@ class Units:
         if key in self._unit_per_field:
             unit = self._unit_per_field[key]
             # if unit == 1:
-                # warnings.warn(f"'{key}' is in the data output but not used in the simulation.")
+            # warnings.warn(f"'{key}' is in the data output but not used in the simulation.")
             return unit
 
         if default is not _MISSING:

@@ -74,7 +74,7 @@ class SnapshotPlotter:
     def __init__(self, snap):
         self.snap = snap
 
-    def peek(self, data='density', **kwargs):
+    def peek(self, data="density", **kwargs):
         """Produce a quick mid-plane xy slice of *data* at 512² resolution.
 
         Tries ``X``, ``Y``, ``Z`` coordinates first; falls back to centre-of-mass
@@ -87,29 +87,33 @@ class SnapshotPlotter:
         :rtype: tuple
         """
         try:
-            return self.slice(data=data, res=512, X='X', Y='Y', Z='Z', plane='xy', slice_coord=0, **kwargs)
-        except FileNotFoundError:       # X, Y, Z are not found, do cmx, cmy, cmz (center of mass)
-            return self.slice(data=data, res=512, X='CMx', Y='CMy', Z='CMz', plane='xy', slice_coord=0, **kwargs)
+            return self.slice(
+                data=data, res=512, X="X", Y="Y", Z="Z", plane="xy", slice_coord=0, **kwargs
+            )
+        except FileNotFoundError:  # X, Y, Z are not found, do cmx, cmy, cmz (center of mass)
+            return self.slice(
+                data=data, res=512, X="CMx", Y="CMy", Z="CMz", plane="xy", slice_coord=0, **kwargs
+            )
 
     def slice(
-        self, 
-        data: str | ArrayLike, 
-        res: int | ArrayLike, 
-        X: str | ArrayLike = "X", 
-        Y: str | ArrayLike = "Y", 
+        self,
+        data: str | ArrayLike,
+        res: int | ArrayLike,
+        X: str | ArrayLike = "X",
+        Y: str | ArrayLike = "Y",
         Z: str | ArrayLike = "Z",
         plane: str = "xy",
         slice_coord: float | u.array.unyt_quantity = 0,
         box_size: ArrayLike | None = None,
         selection: ArrayLike | None = None,
         unit_system: str = "cgs",
-        volume_selection: bool = True, # select based on volume to speed up calculation
+        volume_selection: bool = True,  # select based on volume to speed up calculation
         ax: Any | None = None,
         cmap: str | Colormap = "twilight",
         label_latex: str = "\\rho",
         unit_latex: str | None = None,
         aspect_equal: bool = True,
-        **kwargs
+        **kwargs,
     ):
         """Compute a mid-plane slice and render it as a ``pcolormesh`` plot.
 
@@ -168,8 +172,8 @@ class SnapshotPlotter:
         :rtype: tuple
         """
         sliced_data, xspace, yspace = self.snap.slice(
-            data=data, 
-            res=res, 
+            data=data,
+            res=res,
             X=X,
             Y=Y,
             Z=Z,
@@ -187,19 +191,16 @@ class SnapshotPlotter:
         # Plot
         xx, yy = np.meshgrid(xspace, yspace, indexing="ij")
         im = ax.pcolormesh(xx, yy, np.log10(sliced_data), cmap=cmap, **kwargs)
-        
-        if unit_latex is None:      # read the unit from data if not specified
+
+        if unit_latex is None:  # read the unit from data if not specified
             unit_latex = sliced_data.units.latex_repr
-        
+
         plt.colorbar(im, ax=ax, label=f"$\\log[{label_latex}/{unit_latex}]$")
 
         if aspect_equal:
             plt.gca().set_aspect("equal", adjustable="box")
 
         return ax, im, sliced_data
-
-
-        
 
     def projection(
         self,
@@ -213,7 +214,7 @@ class SnapshotPlotter:
         selection: ArrayLike = None,
         ax: Any | None = None,
         cmap: str | Colormap = "twilight",
-        label_latex: str = "\\Sigma",       # TODO: make them automatic from data name
+        label_latex: str = "\\Sigma",  # TODO: make them automatic from data name
         unit_latex: str | None = None,
         aspect_equal: bool = True,
         **kwargs,
@@ -266,8 +267,8 @@ class SnapshotPlotter:
             Z=Z,
             box_size=box_size,
             unit_system=unit_system,
-            selection=selection
-            )
+            selection=selection,
+        )
 
         ax, im = scalar_map(
             f=projected_data,
@@ -278,24 +279,23 @@ class SnapshotPlotter:
             label_latex=label_latex,
             unit_latex=unit_latex,
             aspect_equal=aspect_equal,
-            **kwargs
-            )
+            **kwargs,
+        )
 
         return ax, im, projected_data
 
 
-
-
-
-def scalar_map(f : u.unyt_array | ArrayLike, 
-                xspace : u.unyt_array | ArrayLike, 
-                yspace : u.unyt_array | ArrayLike,
-                ax: Any | None = None,
-                cmap: str | Colormap = "twilight",
-                label_latex: str = "\\Sigma",
-                unit_latex: str | None = None,
-                aspect_equal: bool = True,
-                **kwargs):
+def scalar_map(
+    f: u.unyt_array | ArrayLike,
+    xspace: u.unyt_array | ArrayLike,
+    yspace: u.unyt_array | ArrayLike,
+    ax: Any | None = None,
+    cmap: str | Colormap = "twilight",
+    label_latex: str = "\\Sigma",
+    unit_latex: str | None = None,
+    aspect_equal: bool = True,
+    **kwargs,
+):
     """Render a 2-D scalar field on a regular grid as a log-scale colour map.
 
     Computes ``log₁₀(f)``, auto-selects ``vmin``/``vmax`` rounded to the
@@ -351,18 +351,20 @@ def scalar_map(f : u.unyt_array | ArrayLike,
         vmin_default = np.floor(dmin * 2.0) / 2.0
         vmax_default = np.ceil(dmax * 2.0) / 2.0
 
-        if 'vmin' not in kw:
-            kw['vmin'] = vmin_default
-        if 'vmax' not in kw:
-            kw['vmax'] = vmax_default
+        if "vmin" not in kw:
+            kw["vmin"] = vmin_default
+        if "vmax" not in kw:
+            kw["vmax"] = vmax_default
     else:
         warnings.warn("No finite values found in data; leaving vmin/vmax to matplotlib defaults.")
 
     xgrid, ygrid = np.meshgrid(xspace, yspace, indexing="ij")
-    im = ax.pcolormesh(xgrid, ygrid, data_log, cmap=cmap, **kw)  # return im as well in case you want to customise colorbar
+    im = ax.pcolormesh(
+        xgrid, ygrid, data_log, cmap=cmap, **kw
+    )  # return im as well in case you want to customise colorbar
 
-    if unit_latex is None:      # read the unit from data if not specified
-        unit_latex = f.units.latex_repr     #TODO: check dimensionality and raise warning
+    if unit_latex is None:  # read the unit from data if not specified
+        unit_latex = f.units.latex_repr  # TODO: check dimensionality and raise warning
 
     plt.colorbar(im, ax=ax, label=f"$\\log[{label_latex}/{unit_latex}]$")
 
