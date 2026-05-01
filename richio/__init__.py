@@ -34,3 +34,4 @@ from richio import (
     units,
 )
 from richio.data import *
+from richio.units import *

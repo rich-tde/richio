@@ -198,7 +198,7 @@ class SnapshotPlotter:
         plt.colorbar(im, ax=ax, label=f"$\\log[{label_latex}/{unit_latex}]$")
 
         if aspect_equal:
-            plt.gca().set_aspect("equal", adjustable="box")
+            ax.set_aspect("equal", adjustable="box")
 
         return ax, im, sliced_data
 
