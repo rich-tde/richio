@@ -50,17 +50,6 @@ from richio.units import units
 #     app()
 
 
-def use_nice_style():
-    """Apply the bundled ``nice.mplstyle`` matplotlib style sheet.
-
-    Loads the style from the ``richio/styles/`` package directory and passes it
-    to :func:`matplotlib.pyplot.style.use`.  Call once at the top of a script
-    or notebook to enable the style globally.
-    """
-    style_path = files("richio.styles").joinpath("nice.mplstyle")
-    plt.style.use(style_path)
-
-
 class SnapshotPlotter:
     """High-level plotting interface bound to a :class:`~richio.data.Snapshot`.
 
