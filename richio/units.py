@@ -98,7 +98,7 @@ class Units:
             "sie_gradient": rus["energy"] / self.mscale / self.tscale,
             "velocity_divergence": rus["velocity"] / self.lscale,
             "specific_entropy": rus["energy"] / rus["temperature"] / self.mscale,
-            "tfb_unit": 2.577726 * u.day,  # NPY fallback time unit
+            "_tfb_unit": 2.577726 * u.day,  # NPY fallback time unit
             "unknown": 1,
         }
 

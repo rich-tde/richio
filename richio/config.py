@@ -57,10 +57,8 @@ FIELD_REGISTRY = {
         "npy_name": "box",
     },
     "Time": {
-        "aliases": ["time", "t", "tfb", "simulation_time", "current_time"],
+        "aliases": ["time", "t"],
         "unit": "tscale",
-        "npy_name": "tfb",
-        "npy_unit": "tfb_unit",  # fallback time for NPY (Mbh=1e4, Mstar=0.5, Rstar=0.47)
     },
     "Cycle": {
         "aliases": ["cycle", "step", "iteration"],
@@ -220,5 +218,12 @@ FIELD_REGISTRY = {
         "npy_only": True,
         "aliases": ["mass", "masses", "particle_mass", "m"],
         "unit": "mscale",
+    },
+    "FallbackTime": {
+        "npy_only": True,
+        "aliases": ["tfb", "fallback_time"],
+        "unit": "tscale",
+        "npy_name": "tfb",
+        "npy_unit": "_tfb_unit",  # fallback time for NPY (Mbh=1e4, Mstar=0.5, Rstar=0.47)
     },
 }
