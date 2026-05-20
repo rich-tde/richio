@@ -351,14 +351,14 @@ class Snapshot:
         box_size: ArrayLike | None = None,
         unit_system: str = "cgs",
         selection: ArrayLike = None,
+        plane: str | None = None,
     ):
-        """Interpolate *data* onto a 3-D grid and integrate (project) along z.
+        """Interpolate *data* onto a 3-D grid and integrate (project) along the
+        normal axis of *plane*.
 
-        Calls :meth:`to_grid` to build the nearest-neighbour grid, then sums
-        ``grid_data * dz`` along the z axis to produce a column-integrated
-        2-D map.  For unit-aware results pass field name strings or
-        :class:`unyt.unyt_array` objects for *data*, *X*, *Y*, *Z*, and
-        *box_size*.
+        Calls :meth:`to_3dgrid` to build the nearest-neighbour grid, then sums
+        ``grid_data * dz`` along the integration axis to produce a
+        column-integrated 2-D map.
 
         :param data: Field to project — field name string or array of shape
                      ``(N,)``.
@@ -382,13 +382,17 @@ class Snapshot:
         :param selection: Boolean mask of shape ``(N,)`` to restrict which
                           cells are used.  Defaults to ``None`` (all cells).
         :type selection: ArrayLike or None
+        :param plane: Projection plane (e.g. ``"xy"``, ``"xz"``, ``"yz"``).
+                      Determines which axis is integrated over.  ``None``
+                      (default) integrates along Z.
+        :type plane: str or None
         :returns: Tuple ``(projected_data, xspace, yspace)`` where
                   *projected_data* has shape ``(nx-1, ny-1)`` and *xspace* /
                   *yspace* are 1-D coordinate arrays.
         :rtype: tuple[:class:`unyt.unyt_array`, :class:`unyt.unyt_array`,
                       :class:`unyt.unyt_array`]
         """
-        i, xspace, yspace, zspace = self.to_grid(res, X, Y, Z, box_size, selection)
+        i, xspace, yspace, zspace = self.to_3dgrid(res, X, Y, Z, box_size, selection, plane=plane)
 
         data = self._get_data(data)
         grid_data = data[i]
@@ -400,7 +404,7 @@ class Snapshot:
 
         return projected_data, xspace, yspace
 
-    def to_grid(
+    def to_3dgrid(
         self,
         res: int | ArrayLike,
         X: str | ArrayLike = "X",
@@ -409,12 +413,14 @@ class Snapshot:
         box_size: ArrayLike | None = None,
         selection: ArrayLike = None,
         endpoint: bool = False,
+        plane: str | None = None,
     ):
-        """Interpolate *data* from cell centres onto a regular Cartesian grid.
+        """Interpolate cell centres onto a regular 3-D Cartesian grid.
 
         Builds a 3-D rectilinear grid spanning the domain bounds, then uses a
-        k-d tree (nearest-neighbour) to assign each grid point the value of its
-        closest cell.
+        k-d tree (nearest-neighbour) to find the closest cell for each grid point.
+        Returns absolute indices into the original particle array; used by
+        :meth:`project` to look up field values.
 
         :param res: Grid resolution — single integer for a cubic grid or a
                     three-element sequence ``(nx, ny, nz)``.
@@ -436,9 +442,16 @@ class Snapshot:
                          ``(hi-lo)/n`` so the grid never reaches the upper
                          boundary.
         :type endpoint: bool
-        :returns: Tuple ``(grid_data, indices, xspace, yspace, zspace)``
-                  where *grid_data* has shape ``(nx, ny, nz)`` and *indices*
-                  are the nearest-cell indices used.
+        :param plane: Projection plane, e.g. ``"xy"``, ``"xz"``, ``"yz"``.
+                      Permutes the coordinate axes so that the third axis (the
+                      integration axis for :meth:`project`) matches the normal
+                      of the requested plane.  ``None`` (default) leaves the
+                      axis order unchanged (integrates along Z).
+        :type plane: str or None
+        :returns: Tuple ``(i, xspace, yspace, zspace)`` where *i* has shape
+                  ``(nx, ny, nz)`` and contains **absolute** indices into the
+                  original particle array, so ``snap.density[i]`` gives the
+                  projected field directly.
         :rtype: tuple
         """
         # Fetch data
@@ -448,7 +461,6 @@ class Snapshot:
 
         # Select cells
         if selection is not None:
-            data = data[selection]
             X = X[selection]
             Y = Y[selection]
             Z = Z[selection]
@@ -465,6 +477,12 @@ class Snapshot:
                     continue
                 else:
                     l = l * units.lscale
+
+        # Permute axes so that Z is the integration axis for the requested plane
+        if plane is not None:
+            X, Y, Z = _parse_plane(plane, X, Y, Z)
+            x0, y0, z0 = _parse_plane(plane, x0, y0, z0)
+            x1, y1, z1 = _parse_plane(plane, x1, y1, z1)
 
         # Set resolution
         try:
@@ -487,9 +505,142 @@ class Snapshot:
             [grid_x, grid_y, grid_z], axis=-1
         )  # coordinates of the grid (query points)
 
-        i = _kdtree_interpolate(coords=coords, grid_coords=grid_coords)
+        i_local = _kdtree_interpolate(coords=coords, grid_coords=grid_coords)
+
+        # Map local indices back to absolute indices in the original particle array
+        if selection is not None:
+            i = np.where(selection)[0][i_local]
+        else:
+            i = i_local
 
         return i, xspace, yspace, zspace
+
+    def to_2dgrid(
+        self,
+        res: int | ArrayLike,
+        X: str | ArrayLike = "X",
+        Y: str | ArrayLike = "Y",
+        Z: str | ArrayLike = "Z",
+        plane: str = "xy",
+        slice_coord: float | u.array.unyt_quantity = 0,
+        box_size: ArrayLike | None = None,
+        selection: ArrayLike | None = None,
+        volume_selection: bool = True,
+    ):
+        """Compute the nearest-neighbour index map for a 2-D slice plane.
+
+        Handles all geometry — plane permutation, volume-proximity filtering,
+        and k-d tree interpolation — and returns **absolute** indices into the
+        original (unfiltered) particle array so that multiple fields can be
+        looked up with a single ``field[i]`` without repeating the interpolation.
+
+        :param res: Grid resolution — single integer (square) or ``(nx, ny)``.
+        :type res: int or ArrayLike
+        :param X: x-coordinates of cell centres. Defaults to ``"X"``.
+        :type X: str or ArrayLike
+        :param Y: y-coordinates of cell centres. Defaults to ``"Y"``.
+        :type Y: str or ArrayLike
+        :param Z: z-coordinates of cell centres. Defaults to ``"Z"``.
+        :type Z: str or ArrayLike
+        :param plane: Slice plane, e.g. ``"xy"`` (default), ``"yz"``, ``"zx"``.
+        :type plane: str
+        :param slice_coord: Normal-axis coordinate at which to slice.
+                            Defaults to ``0``.
+        :type slice_coord: float or :class:`unyt.unyt_quantity`
+        :param box_size: Domain bounds ``[x0, y0, z0, x1, y1, z1]`` (6-element)
+                         or ``[x0, y0, x1, y1]`` (4-element, plane only).
+                         Auto-detected when ``None``.
+        :type box_size: ArrayLike or None
+        :param selection: Boolean mask ``(N,)`` to restrict which cells are
+                          used.  Defaults to ``None`` (all cells).
+        :type selection: ArrayLike or None
+        :param volume_selection: Pre-filter to cells within one cell-size of
+                                 the plane to speed up the k-d tree query.
+                                 Defaults to ``True``.
+        :type volume_selection: bool
+        :returns: Tuple ``(i, xspace, yspace)`` where *i* has shape ``(nx, ny)``
+                  and contains **absolute** indices into the original particle
+                  array (before any masking), so ``snap.density[i]`` gives the
+                  sliced field directly.
+        :rtype: tuple[:class:`numpy.ndarray`, :class:`unyt.unyt_array`,
+                      :class:`unyt.unyt_array`]
+        """
+        # TODO: implement star_mask : put data to zero instead of removing them
+        # (which is bad if you use nn) and put them to the lowest color in
+        # colormap when plotting (something like set_bad...)
+
+        X = self._get_data(X)
+        Y = self._get_data(Y)
+        Z = self._get_data(Z)
+
+        # Build combined boolean mask over the full particle set
+        mask = np.ones(len(X), dtype=bool)
+        if selection is not None:
+            mask &= selection
+
+        X = X[mask]
+        Y = Y[mask]
+        Z = Z[mask]
+        if volume_selection:
+            volume = self._get_data("volume")[mask]
+
+        # Set resolution
+        try:
+            nx, ny = res[0], res[1]
+        except TypeError:
+            nx = ny = res
+
+        # Set boxsize
+        if box_size is None:
+            x0, y0, z0, x1, y1, z1 = self.box
+            x0, y0, z0 = _parse_plane(plane, x0, y0, z0)
+            x1, y1, z1 = _parse_plane(plane, x1, y1, z1)
+        else:
+            if not isinstance(box_size, u.unyt_array):
+                box_size *= units.lscale
+            if len(box_size) == 6:
+                x0, y0, z0, x1, y1, z1 = box_size
+                x0, y0, z0 = _parse_plane(plane, x0, y0, z0)
+                x1, y1, z1 = _parse_plane(plane, x1, y1, z1)
+            elif len(box_size) == 4:
+                x0, y0, x1, y1 = box_size
+
+        if not isinstance(slice_coord, u.unyt_quantity):
+            slice_coord *= units.lscale
+
+        # Redefine X, Y to be the in-plane axes and Z the normal axis
+        X, Y, Z = _parse_plane(plane, X, Y, Z)
+
+        if volume_selection:
+            vol_mask = np.abs(Z - slice_coord) < volume ** (1 / 3)
+            # assuming spherical cells, V^(1/3)=(4pi/3)^(1/3)R ~ 1.6R, we don't
+            # include the factor such that if V is not round enough we won't
+            # lose too much accuracy
+            # Fold vol_mask back into the full-array mask so we can return
+            # absolute indices
+            mask[np.where(mask)[0][~vol_mask]] = False
+            X = X[vol_mask]
+            Y = Y[vol_mask]
+            Z = Z[vol_mask]
+
+        # Make Euclidean grid
+        xspace = np.linspace(x0, x1, nx, endpoint=False)
+        yspace = np.linspace(y0, y1, ny, endpoint=False)
+        zspace = slice_coord
+
+        grid_x, grid_y, grid_z = np.meshgrid(xspace, yspace, zspace, indexing="ij")
+
+        coords = np.stack([X, Y, Z], axis=-1)
+        grid_coords = np.squeeze(
+            np.stack([grid_x, grid_y, grid_z], axis=-1)
+        )  # (nx, ny, 1, 3) → (nx, ny, 3)
+
+        i_local = _kdtree_interpolate(coords=coords, grid_coords=grid_coords)
+
+        # Map local indices back to absolute indices in the original particle array
+        i = np.where(mask)[0][i_local]
+
+        return i, xspace, yspace
 
     def slice(
         self,
@@ -503,138 +654,54 @@ class Snapshot:
         box_size: ArrayLike | None = None,
         selection: ArrayLike | None = None,
         unit_system: str = "cgs",
-        volume_selection: bool = True,  # select based on volume to speed up calculation
+        volume_selection: bool = True,
     ):
-        """Make a slice of the simulation grid. Outputs the intepolated data and
-        the indices.
+        """Make a slice of the simulation grid.
 
-        :param data: The data colume to interpolate, can be the name of the
-            column ("density") or an array of size (N,) (snap.density)
-        :type data: str | ArrayLike
-        :param res: Resolution, can be one integer for a square grid (256 means a
-            256x256 grid) or a tuple/array (X, Y) for an irregular grid
-        :type res: int | ArrayLike
-        :param X: The x coordinates of mesh generating points, can be name of
-            the column or an array, defaults to "X"
-        :type X: str | ArrayLike, optional
-        :param Y: The y coordinates of mesh generating points, can be name of
-            the column or an array, defaults to "Y"
-        :type Y: str | ArrayLike, optional
-        :param Z: The z coordinates of mesh generating points, can be name of
-            the column or an array, defaults to "Z"
-        :type Z: str | ArrayLike, optional
-        :param plane: "xy", "yz", "xz", or in any other order, like "yx",
-            defaults to "xy"
-        :type plane: str, optional
-        :param slice_coord: The coordinates of the orthogonal axis to the
-            slicing plane, defaults to 0
-        :type slice_coord: float | u.array.unyt_quantity | None, optional
-        :param box_size: An array of (x_lower, y_lower, z_lower, x_upper,
-            y_upper, z_upper), or (x1_lower, x2_lower, x1_upper, x2_upper)
-            depending on the 'plane' parameter. Will read from the box_size of
-            the snapshot if not given, defaults to None
-        :type box_size: ArrayLike | None, optional
-        :param selection: A bool array of size (N,) which filters what particles
-            in the simulation are plotted, defaults to None
-        :type selection: ArrayLike | None, optional
-        :param unit_system: The data will be converted to given 'unyt' unit
-            system, can be "cgs", "rich"(code solar units) or other unyt units,
-            defaults to "cgs"
-        :type unit_system: str, optional
-        :param volume_selection: If turned on, only cells within a distance of
-            volume**(1/3) to the slicing plane will be used, which speeds up the
-            computation a lot (without losing much accuracy), defaults to True
-        :type volume_selection: bool, optional
-        :return: The interpolated data on a grid data, linear space of the x
-            grid, linear space of the y grid
-        :rtype: (unyt.unyt_array, unyt.unyt_array, unyt.unyt_array)
+        Delegates geometry and interpolation to :meth:`to_2dgrid`, then looks
+        up *data* using the returned absolute indices.  To slice multiple fields
+        at the same slice plane without repeating the interpolation, call
+        :meth:`to_2dgrid` directly and index each field with the returned *i*.
+
+        :param data: Field to slice — name string or array of shape ``(N,)``.
+        :type data: str or ArrayLike
+        :param res: Grid resolution — integer (square) or ``(nx, ny)`` tuple.
+        :type res: int or ArrayLike
+        :param X: x-coordinates. Defaults to ``"X"``.
+        :type X: str or ArrayLike
+        :param Y: y-coordinates. Defaults to ``"Y"``.
+        :type Y: str or ArrayLike
+        :param Z: z-coordinates. Defaults to ``"Z"``.
+        :type Z: str or ArrayLike
+        :param plane: Slice plane. Defaults to ``"xy"``.
+        :type plane: str
+        :param slice_coord: Normal-axis coordinate at which to slice.
+                            Defaults to ``0``.
+        :type slice_coord: float or :class:`unyt.unyt_quantity`
+        :param box_size: Domain bounds. Auto-detected when ``None``.
+        :type box_size: ArrayLike or None
+        :param selection: Boolean cell mask. Defaults to ``None`` (all cells).
+        :type selection: ArrayLike or None
+        :param unit_system: Output unit system. Defaults to ``'cgs'``.
+        :type unit_system: str
+        :param volume_selection: Pre-filter cells near the slice plane.
+                                 Defaults to ``True``.
+        :type volume_selection: bool
+        :returns: Tuple ``(sliced_data, xspace, yspace)``.
+        :rtype: tuple
         """
-        # TODO: implement star_mask : put data to zero instead of removing them
-        # (which is bad if you use nn) and put them to the lowest color in
-        # colormap when plotting (something like set_bad...)
-
-        # Fetch data
-        data = self._get_data(data)
-        X = self._get_data(X)
-        Y = self._get_data(Y)
-        Z = self._get_data(Z)
-
-        if volume_selection:
-            volume = self._get_data("volume")
-
-        if selection is not None:
-            data = data[selection]
-            X = X[selection]
-            Y = Y[selection]
-            Z = Z[selection]
-            if volume_selection:
-                volume = volume[selection]
-
-        # Set resolution
-        try:
-            nx, ny = res[0], res[1]
-        except TypeError:
-            nx = ny = res
-
-        # Set boxsize
-        if box_size is None:
-            x0, y0, z0, x1, y1, z1 = self.box  # Load the box size
-            x0, y0, z0 = _parse_plane(plane, x0, y0, z0)
-            x1, y1, z1 = _parse_plane(plane, x1, y1, z1)
-        else:
-            if isinstance(box_size, u.unyt_array):
-                pass
-            else:
-                box_size *= units.lscale
-
-            if len(box_size) == 6:
-                x0, y0, z0, x1, y1, z1 = box_size  # A 3d box
-                x0, y0, z0 = _parse_plane(plane, x0, y0, z0)
-                x1, y1, z1 = _parse_plane(plane, x1, y1, z1)
-            elif len(box_size) == 4:
-                x0, y0, x1, y1 = box_size
-
-        # Assign code unit if slice_coord doesn't have a unit
-        if isinstance(slice_coord, u.unyt_quantity):
-            pass
-        else:
-            slice_coord *= units.lscale
-
-        # x_slice, y_slice, z_slice should only have one that is not None
-        # redefine x y to be the plane, z the sliced direction
-        X, Y, Z = _parse_plane(plane, X, Y, Z)
-
-        # Select only cells in proximity
-        if volume_selection:
-            mask = np.abs(Z - slice_coord) < volume ** (1 / 3)
-            # assuming spherical cells, V^(1/3)=(4pi/3)^(1/3)R ~ 1.6R, we don't
-            # include the factor such that if V is not round enough we won't
-            # lose too much accuracy
-            data = data[mask]
-            X = X[mask]
-            Y = Y[mask]
-            Z = Z[mask]
-
-        # Make Euclidean grid
-        xspace = np.linspace(x0, x1, nx, endpoint=False)
-        yspace = np.linspace(y0, y1, ny, endpoint=False)
-        zspace = slice_coord
-
-        grid_x, grid_y, grid_z = np.meshgrid(xspace, yspace, zspace, indexing="ij")
-
-        coords = np.stack([X, Y, Z], axis=-1)  # coordinates of the particles
-        grid_coords = np.stack(
-            [grid_x, grid_y, grid_z], axis=-1
-        )  # coordinates of the grid (query points)
-        grid_coords = np.squeeze(
-            grid_coords
-        )  # remove extra dimension (nx, ny, 1, 3) to (nx, ny, 3)
-
-        i = _kdtree_interpolate(coords=coords, grid_coords=grid_coords)
-
-        sliced_data = data[i]
-        sliced_data = sliced_data.in_base(unit_system)
-
+        i, xspace, yspace = self.to_2dgrid(
+            res=res,
+            X=X,
+            Y=Y,
+            Z=Z,
+            plane=plane,
+            slice_coord=slice_coord,
+            box_size=box_size,
+            selection=selection,
+            volume_selection=volume_selection,
+        )
+        sliced_data = self._get_data(data)[i].in_base(unit_system)
         return sliced_data, xspace, yspace
 
 

@@ -99,9 +99,10 @@ class SnapshotPlotter:
         volume_selection: bool = True,  # select based on volume to speed up calculation
         ax: Any | None = None,
         cmap: str | Colormap = "twilight",
-        label_latex: str = "\\rho",
+        label_latex: str = "",
         unit_latex: str | None = None,
         aspect_equal: bool = True,
+        log_scale: bool = True,
         **kwargs,
     ):
         """Compute a mid-plane slice and render it as a ``pcolormesh`` plot.
@@ -174,20 +175,18 @@ class SnapshotPlotter:
             volume_selection=volume_selection,
         )
 
-        if ax is None:
-            fig, ax = plt.subplots()
-
-        # Plot
-        xx, yy = np.meshgrid(xspace, yspace, indexing="ij")
-        im = ax.pcolormesh(xx, yy, np.log10(sliced_data), cmap=cmap, **kwargs)
-
-        if unit_latex is None:  # read the unit from data if not specified
-            unit_latex = sliced_data.units.latex_repr
-
-        plt.colorbar(im, ax=ax, label=f"$\\log[{label_latex}/{unit_latex}]$")
-
-        if aspect_equal:
-            ax.set_aspect("equal", adjustable="box")
+        ax, im = scalar_map(
+            f=sliced_data,
+            xspace=xspace,
+            yspace=yspace,
+            ax=ax,
+            cmap=cmap,
+            label_latex=label_latex,
+            unit_latex=unit_latex,
+            aspect_equal=aspect_equal,
+            log_scale=log_scale,
+            **kwargs,
+        )
 
         return ax, im, sliced_data
 
@@ -198,12 +197,13 @@ class SnapshotPlotter:
         X: str | ArrayLike = "X",
         Y: str | ArrayLike = "Y",
         Z: str | ArrayLike = "Z",
+        plane: str | None = None,
         box_size: ArrayLike | None = None,
         unit_system: str = "cgs",
         selection: ArrayLike = None,
         ax: Any | None = None,
         cmap: str | Colormap = "twilight",
-        label_latex: str = "\\Sigma",  # TODO: make them automatic from data name
+        label_latex: str = "",  # TODO: make them automatic from data name
         unit_latex: str | None = None,
         aspect_equal: bool = True,
         **kwargs,
@@ -223,8 +223,12 @@ class SnapshotPlotter:
         :type X: str or ArrayLike
         :param Y: y-coordinates. Defaults to ``"Y"``.
         :type Y: str or ArrayLike
-        :param Z: z-coordinates (integration axis). Defaults to ``"Z"``.
+        :param Z: z-coordinates. Defaults to ``"Z"``.
         :type Z: str or ArrayLike
+        :param plane: Projection plane (e.g. ``"xy"``, ``"xz"``, ``"yz"``).
+                      Determines the integration axis.  ``None`` integrates
+                      along Z.
+        :type plane: str or None
         :param box_size: Domain bounds. Auto-detected when ``None``.
         :type box_size: ArrayLike or None
         :param unit_system: Output unit system. Defaults to ``'cgs'``.
@@ -257,6 +261,7 @@ class SnapshotPlotter:
             box_size=box_size,
             unit_system=unit_system,
             selection=selection,
+            plane=plane,
         )
 
         ax, im = scalar_map(
@@ -280,9 +285,10 @@ def scalar_map(
     yspace: u.unyt_array | ArrayLike,
     ax: Any | None = None,
     cmap: str | Colormap = "twilight",
-    label_latex: str = "\\Sigma",
+    label_latex: str = "",
     unit_latex: str | None = None,
     aspect_equal: bool = True,
+    log_scale: bool = True,
     **kwargs,
 ):
     """Render a 2-D scalar field on a regular grid as a log-scale colour map.
@@ -323,41 +329,34 @@ def scalar_map(
     if ax is None:
         fig, ax = plt.subplots()
 
+    if unit_latex is None:  # read the unit from data if not specified
+        unit_latex = f.units.latex_repr  # TODO: check dimensionality and raise warning
+
     # compute log-space data and choose sensible defaults for vmin/vmax
-    data_log = np.log10(f)
+    if log_scale is True:
+        f = np.log10(f)
 
     # copy kwargs so we can set defaults without mutating caller's dict
     kw = kwargs.copy()
 
-    # convert to ndarray for robust min/max computations
-    arr = np.asarray(data_log)
-    finite_mask = np.isfinite(arr)
-    if finite_mask.any():
-        dmin = float(np.min(arr[finite_mask]))
-        dmax = float(np.max(arr[finite_mask]))
-
+    if "vmin" not in kw:
+        dmin = float(np.nanmin(f))
         # round to nearest half-integers outward
         vmin_default = np.floor(dmin * 2.0) / 2.0
+        kw["vmin"] = vmin_default
+    if "vmax" not in kw:
+        dmax = float(np.nanmax(f))
         vmax_default = np.ceil(dmax * 2.0) / 2.0
-
-        if "vmin" not in kw:
-            kw["vmin"] = vmin_default
-        if "vmax" not in kw:
-            kw["vmax"] = vmax_default
-    else:
-        warnings.warn("No finite values found in data; leaving vmin/vmax to matplotlib defaults.")
+        kw["vmax"] = vmax_default
 
     xgrid, ygrid = np.meshgrid(xspace, yspace, indexing="ij")
     im = ax.pcolormesh(
-        xgrid, ygrid, data_log, cmap=cmap, **kw
+        xgrid, ygrid, f, cmap=cmap, **kw
     )  # return im as well in case you want to customise colorbar
-
-    if unit_latex is None:  # read the unit from data if not specified
-        unit_latex = f.units.latex_repr  # TODO: check dimensionality and raise warning
 
     plt.colorbar(im, ax=ax, label=f"$\\log[{label_latex}/{unit_latex}]$")
 
     if aspect_equal:
-        plt.gca().set_aspect("equal", adjustable="box")
+        ax.set_aspect("equal", adjustable="box")
 
     return ax, im
