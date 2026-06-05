@@ -20,8 +20,12 @@ from collections import defaultdict
 import math as _math
 from types import SimpleNamespace
 
-from numba import njit
+from concurrent.futures import ThreadPoolExecutor
+import os
+
+from numba import njit, prange
 import numpy as np
+from numpy.typing import ArrayLike
 from scipy.spatial import Voronoi
 
 # ---------------------------------------------------------------------------- #
@@ -125,7 +129,9 @@ def P2P1M(P2_P1, gamma):
 # ---------------------------------------------------------------------------- #
 
 
-def build_voronoi(snap):
+def build_voronoi(
+    snap=None, X: str | ArrayLike = "X", Y: str | ArrayLike = "Y", Z: str | ArrayLike = "Z"
+):
     """Build a Voronoi adjacency graph from snapshot cell centres.
 
     Constructs the full Voronoi tessellation via
@@ -134,8 +140,15 @@ def build_voronoi(snap):
     numba kernels.
 
     :param snap: Loaded RICH snapshot providing ``X``, ``Y``, ``Z``
-                 coordinates.
-    :type snap: :class:`~richio.data.Snapshot`
+                 coordinates.  Optional — pass ``None`` and supply ``X``,
+                 ``Y``, ``Z`` as array-likes directly.
+    :type snap: :class:`~richio.data.Snapshot` or None
+    :param X: Field name resolved against ``snap``, or an array-like of
+              x-coordinates when ``snap`` is ``None``.
+    :param Y: Field name resolved against ``snap``, or an array-like of
+              y-coordinates when ``snap`` is ``None``.
+    :param Z: Field name resolved against ``snap``, or an array-like of
+              z-coordinates when ``snap`` is ``None``.
     :returns: Namespace with attributes:
 
               * ``positions`` — ``float64 (N, 3)`` cell centres in code_length.
@@ -143,7 +156,17 @@ def build_voronoi(snap):
               * ``neighbor_ptr`` — ``int32`` CSR row-pointer array, length N+1.
     :rtype: :class:`types.SimpleNamespace`
     """
-    positions = np.stack([snap.X.v, snap.Y.v, snap.Z.v], axis=-1)
+
+    if snap is not None:
+        X = snap._get_data(X).v
+        Y = snap._get_data(Y).v
+        Z = snap._get_data(Z).v
+    else:
+        X = np.asarray(X)
+        Y = np.asarray(Y)
+        Z = np.asarray(Z)
+
+    positions = np.stack([X, Y, Z], axis=-1)
 
     print(f"Building Voronoi for {len(positions):,} cells ...", flush=True)
     vor = Voronoi(positions)
@@ -177,7 +200,7 @@ def _next_cell(positions, neighbor_data, neighbor_ptr, idx, dx, dy, dz):
     """JIT kernel: find the next Voronoi cell along a ray (Springel 2010 §2).
 
     The perpendicular-bisector face between generators xᵢ and xⱼ has normal
-    **n** = xⱼ − xᵢ.  A ray from xᵢ in direction **d̂** crosses it at
+    **n** = xⱼ - xᵢ.  A ray from xᵢ in direction **d̂** crosses it at
     t = |**n**|² / (2 **n**·**d̂**).  Returns the neighbour with the smallest
     positive *t*, or ``-1`` at a domain boundary.
 
@@ -216,7 +239,7 @@ def _next_cell(positions, neighbor_data, neighbor_ptr, idx, dx, dy, dz):
     return best_j
 
 
-@njit(cache=True)
+@njit(parallel=True, cache=True)
 def _condition3_kernel(
     positions, neighbor_data, neighbor_ptr, candidates, T_np, P_np, ds_np, DlogT_min, DlogP_min
 ):
@@ -231,7 +254,7 @@ def _condition3_kernel(
     :param neighbor_ptr: CSR row-pointer array, length N+1.
     :param candidates: Indices of cells satisfying conditions 1 & 2,
                        shape ``(M,)``.
-    :param T_np: Proxy temperature array (P/ρ), shape ``(N,)``.
+    :param T_np: Proxy temperature array (P/rho), shape ``(N,)``.
     :param P_np: Pressure array, shape ``(N,)``.
     :param ds_np: Pre-normalised shock direction for each candidate,
                   shape ``(M, 3)``.
@@ -241,7 +264,7 @@ def _condition3_kernel(
     :rtype: :class:`numpy.ndarray` (bool)
     """
     result = np.zeros(len(candidates), dtype=np.bool_)
-    for k in range(len(candidates)):
+    for k in prange(len(candidates)):  # each result[k] write is independent
         idx = candidates[k]
         dx = ds_np[k, 0]
         dy = ds_np[k, 1]
@@ -328,7 +351,7 @@ def _ray_tracer(
     return -1
 
 
-@njit(cache=True)
+@njit(parallel=True, cache=True)
 def _shock_surface_kernel(
     positions,
     neighbor_data,
@@ -347,13 +370,17 @@ def _shock_surface_kernel(
 
     For each shock-zone cell traces pre- and post-shock rays via
     :func:`_ray_tracer`, checks that the temperature jump is ≥ 1, and
-    computes three independent Mach-number estimates from the T, P, and ρ
+    computes three independent Mach-number estimates from the T, P, and rho
     Rankine-Hugoniot relations.
+
+    Parallel strategy: pre-allocate full-size buffers so each ``prange``
+    iteration writes exclusively to index *i* (no shared counter); a
+    sequential compaction pass collects accepted entries afterwards.
 
     :param positions: Cell centres, shape ``(N, 3)``.
     :param neighbor_data: CSR flat adjacency array.
     :param neighbor_ptr: CSR row-pointer array, length N+1.
-    :param T_np: Proxy temperature P/ρ, shape ``(N,)``.
+    :param T_np: Proxy temperature P/rho, shape ``(N,)``.
     :param P_np: Pressure, shape ``(N,)``.
     :param rho_np: Density, shape ``(N,)``.
     :param shock_mask: Boolean shock-zone mask, shape ``(N,)``.
@@ -368,15 +395,16 @@ def _shock_surface_kernel(
     :rtype: tuple
     """
     n = len(idx_shock)
-    M_T = np.empty(n, np.float64)
-    M_P = np.empty(n, np.float64)
-    M_rho = np.empty(n, np.float64)
-    i_surf = np.empty(n, np.int64)
-    i_pre = np.empty(n, np.int64)
-    i_post = np.empty(n, np.int64)
-    count = 0
 
-    for i in range(n):
+    # Full-size buffers: thread i owns slot i exclusively → no race condition
+    valid = np.zeros(n, np.bool_)
+    M_T_buf = np.zeros(n, np.float64)
+    M_P_buf = np.zeros(n, np.float64)
+    M_rho_buf = np.zeros(n, np.float64)
+    pre_buf = np.empty(n, np.int64)
+    post_buf = np.empty(n, np.int64)
+
+    for i in prange(n):
         if ds_shock[i, 0] == 0.0 and ds_shock[i, 1] == 0.0 and ds_shock[i, 2] == 0.0:
             continue
 
@@ -416,25 +444,180 @@ def _shock_surface_kernel(
         P_jump = P_np[post] / P_np[pre]
         rho_jump = rho_np[post] / rho_np[pre]
 
-        # T2T1M
+        a = 2.0 * gamma * (gamma - 1.0)
+        mb = 2.0 * gamma - 6.0 * gamma + T_jump * (gamma + 1.0) ** 2 + 1.0
+        M_T_buf[i] = _math.sqrt(
+            max((mb + _math.sqrt(max(mb * mb + 8.0 * a * (gamma - 1.0), 0.0))) / (2.0 * a), 0.0)
+        )
+        M_P_buf[i] = _math.sqrt(max((P_jump * (gamma + 1.0) + gamma - 1.0) / (2.0 * gamma), 0.0))
+        dR = gamma + 1.0 - rho_jump * (gamma - 1.0)
+        M_rho_buf[i] = _math.sqrt(2.0 * rho_jump / dR) if dR > 0.0 else 0.0
+        pre_buf[i] = pre
+        post_buf[i] = post
+        valid[i] = True
+
+    # Sequential compaction — valid[i] is already committed before this loop
+    count = 0
+    M_T = np.empty(n, np.float64)
+    M_P = np.empty(n, np.float64)
+    M_rho = np.empty(n, np.float64)
+    i_surf = np.empty(n, np.int64)
+    i_pre = np.empty(n, np.int64)
+    i_post = np.empty(n, np.int64)
+    for i in range(n):
+        if valid[i]:
+            M_T[count] = M_T_buf[i]
+            M_P[count] = M_P_buf[i]
+            M_rho[count] = M_rho_buf[i]
+            i_surf[count] = i
+            i_pre[count] = pre_buf[i]
+            i_post[count] = post_buf[i]
+            count += 1
+
+    return (M_T[:count], M_P[:count], M_rho[:count], i_surf[:count], i_pre[:count], i_post[:count])
+
+
+# ---------------------------------------------------------------------------- #
+#                    Sophisticated – thread-pool chunk kernels                 #
+# ---------------------------------------------------------------------------- #
+# Numba releases the GIL inside @njit functions, so Python's ThreadPoolExecutor
+# achieves true CPU parallelism without data copying or pickling overhead.
+# The chunk kernels below are serial slices of the main kernels; the thread
+# pool dispatches them across OS threads while they share the same numpy arrays.
+
+
+@njit(cache=True)
+def _condition3_kernel_chunk(
+    positions,
+    neighbor_data,
+    neighbor_ptr,
+    candidates,
+    T_np,
+    P_np,
+    ds_np,
+    DlogT_min,
+    DlogP_min,
+    k_start,
+    k_end,
+):
+    """Serial condition-3 check for ``candidates[k_start:k_end]``.
+
+    :param k_start: First candidate index (inclusive).
+    :param k_end: Last candidate index (exclusive).
+    :returns: Boolean array of length ``k_end - k_start``.
+    :rtype: :class:`numpy.ndarray` (bool)
+    """
+    chunk = k_end - k_start
+    result = np.zeros(chunk, dtype=np.bool_)
+    for kk in range(chunk):
+        k = k_start + kk
+        idx = candidates[k]
+        dx = ds_np[k, 0]
+        dy = ds_np[k, 1]
+        dz = ds_np[k, 2]
+        if dx == 0.0 and dy == 0.0 and dz == 0.0:
+            continue
+        i_pre = _next_cell(positions, neighbor_data, neighbor_ptr, idx, dx, dy, dz)
+        i_post = _next_cell(positions, neighbor_data, neighbor_ptr, idx, -dx, -dy, -dz)
+        if i_pre < 0 or i_post < 0:
+            continue
+        T_pre = T_np[i_pre]
+        T_post = T_np[i_post]
+        P_pre = P_np[i_pre]
+        P_post = P_np[i_post]
+        if T_pre <= 0.0 or T_post <= 0.0 or P_pre <= 0.0 or P_post <= 0.0:
+            continue
+        if _math.log10(T_post / T_pre) >= DlogT_min and _math.log10(P_post / P_pre) >= DlogP_min:
+            result[kk] = True
+    return result
+
+
+@njit(cache=True)
+def _shock_surface_kernel_chunk(
+    positions,
+    neighbor_data,
+    neighbor_ptr,
+    T_np,
+    P_np,
+    rho_np,
+    shock_mask,
+    idx_shock,
+    divV_shock,
+    ds_shock,
+    gamma,
+    i_start,
+    i_end,
+    max_steps=500,
+):
+    """Serial shock-surface kernel for ``idx_shock[i_start:i_end]``.
+
+    Reads the full shared arrays (``idx_shock``, ``divV_shock``, ``ds_shock``)
+    because :func:`_ray_tracer` may traverse shock cells outside the chunk
+    boundary.
+
+    :param i_start: First shock-cell index in *idx_shock* (inclusive).
+    :param i_end: Last shock-cell index in *idx_shock* (exclusive).
+    :returns: Tuple ``(M_T, M_P, M_rho, surf_idx, pre_idx, post_idx)`` for
+              accepted cells in the chunk.
+    :rtype: tuple
+    """
+    chunk = i_end - i_start
+    M_T = np.empty(chunk, np.float64)
+    M_P = np.empty(chunk, np.float64)
+    M_rho = np.empty(chunk, np.float64)
+    i_surf = np.empty(chunk, np.int64)
+    i_pre = np.empty(chunk, np.int64)
+    i_post = np.empty(chunk, np.int64)
+    count = 0
+    for ii in range(chunk):
+        i = i_start + ii
+        if ds_shock[i, 0] == 0.0 and ds_shock[i, 1] == 0.0 and ds_shock[i, 2] == 0.0:
+            continue
+        post = _ray_tracer(
+            positions,
+            neighbor_data,
+            neighbor_ptr,
+            shock_mask,
+            idx_shock,
+            i,
+            divV_shock,
+            ds_shock,
+            -1,
+            max_steps,
+        )
+        if post < 0:
+            continue
+        pre = _ray_tracer(
+            positions,
+            neighbor_data,
+            neighbor_ptr,
+            shock_mask,
+            idx_shock,
+            i,
+            divV_shock,
+            ds_shock,
+            +1,
+            max_steps,
+        )
+        if pre < 0:
+            continue
+        T_jump = T_np[post] / T_np[pre]
+        if T_jump < 1.0 or T_np[pre] <= 0.0:
+            continue
+        P_jump = P_np[post] / P_np[pre]
+        rho_jump = rho_np[post] / rho_np[pre]
         a = 2.0 * gamma * (gamma - 1.0)
         mb = 2.0 * gamma - 6.0 * gamma + T_jump * (gamma + 1.0) ** 2 + 1.0
         M_T[count] = _math.sqrt(
             max((mb + _math.sqrt(max(mb * mb + 8.0 * a * (gamma - 1.0), 0.0))) / (2.0 * a), 0.0)
         )
-
-        # P2P1M
         M_P[count] = _math.sqrt(max((P_jump * (gamma + 1.0) + gamma - 1.0) / (2.0 * gamma), 0.0))
-
-        # rho2rho1M
         dR = gamma + 1.0 - rho_jump * (gamma - 1.0)
         M_rho[count] = _math.sqrt(2.0 * rho_jump / dR) if dR > 0.0 else 0.0
-
-        i_surf[count] = i
+        i_surf[count] = i  # position within idx_shock
         i_pre[count] = pre
         i_post[count] = post
         count += 1
-
     return (M_T[:count], M_P[:count], M_rho[:count], i_surf[:count], i_pre[:count], i_post[:count])
 
 
@@ -466,7 +649,7 @@ def find_shock_zone(snap, vor, gamma=5 / 3):
     # Condition 1
     cond1 = snap.divV.v < 0
 
-    # Temperature gradient  ∇T ∝ ∇P/ρ − P ∇ρ/ρ²
+    # Temperature gradient  ∇T ∝ ∇P/rho - P ∇ρ/ρ²
     P_v = snap.P.v
     rho_v = snap.rho.v
     grad_P = np.stack([snap.DpDx.v, snap.DpDy.v, snap.DpDz.v], axis=-1)
@@ -481,7 +664,7 @@ def find_shock_zone(snap, vor, gamma=5 / 3):
     ds = np.where(norm_gT > 0, -grad_T / norm_gT, 0.0)
 
     # Condition 3 — Voronoi + numba
-    # T ∝ P/ρ: we use the ratio directly (constant μmH/kB cancels)
+    # T ∝ P/rho: we use the ratio directly (constant μmH/kB cancels)
     T_np = np.ascontiguousarray(P_v / rho_v, dtype=np.float64)
     P_np = np.ascontiguousarray(P_v, dtype=np.float64)
 
@@ -515,7 +698,7 @@ def find_shock_surface(snap, vor, shock_zone, gamma=5 / 3):
 
     For each cell in the shock zone, traces rays in ±**ds** until exiting the
     zone, then computes three independent Rankine-Hugoniot Mach-number estimates
-    from the T, P, and ρ jumps between the pre- and post-shock cells.
+    from the T, P, and rho jumps between the pre- and post-shock cells.
 
     :param snap: Loaded RICH snapshot providing ``P``, ``rho``, ``divV``, and
                  gradient fields.
@@ -585,4 +768,167 @@ def find_shock_surface(snap, vor, shock_zone, gamma=5 / 3):
         mach_T=M_T,
         mach_P=M_P,
         mach_rho=M_rho,
+    )
+
+
+# ---------------------------------------------------------------------------- #
+#                     Sophisticated – thread-pool public API                   #
+# ---------------------------------------------------------------------------- #
+
+
+def find_shock_zone_threaded(snap, vor, gamma=5 / 3, n_workers=None):
+    """Thread-pool parallel version of :func:`find_shock_zone`.
+
+    Dispatches condition-3 evaluation across ``n_workers`` OS threads using
+    :class:`~concurrent.futures.ThreadPoolExecutor`.  Because numba releases
+    the GIL inside ``@njit`` functions the threads run compiled code in true
+    parallel on separate CPU cores without any data copying.
+
+    Compared to the ``prange`` version this gives explicit control over chunk
+    size and allows interleaving with other Python work between chunks.
+
+    :param snap: Loaded RICH snapshot.
+    :type snap: :class:`~richio.data.Snapshot`
+    :param vor: Voronoi graph from :func:`build_voronoi`.
+    :type vor: :class:`types.SimpleNamespace`
+    :param gamma: Adiabatic index.  Defaults to 5/3.
+    :type gamma: float
+    :param n_workers: Number of threads.  Defaults to ``os.cpu_count()``.
+    :type n_workers: int or None
+    :returns: Boolean shock-zone mask, shape ``(N,)``.
+    :rtype: :class:`numpy.ndarray` (bool)
+    """
+    if n_workers is None:
+        n_workers = os.cpu_count()
+
+    cond1 = snap.divV.v < 0
+    P_v = snap.P.v
+    rho_v = snap.rho.v
+    grad_P = np.stack([snap.DpDx.v, snap.DpDy.v, snap.DpDz.v], axis=-1)
+    grad_rho = np.stack([snap.DrhoDx.v, snap.DrhoDy.v, snap.DrhoDz.v], axis=-1)
+    grad_T = (grad_P.T / rho_v - P_v * grad_rho.T / rho_v**2).T
+    cond2 = np.einsum("ij,ij->i", grad_T, grad_P) > 0
+    norm_gT = np.linalg.norm(grad_T, axis=-1, keepdims=True)
+    ds = np.where(norm_gT > 0, -grad_T / norm_gT, 0.0)
+
+    T_np = np.ascontiguousarray(P_v / rho_v, dtype=np.float64)
+    P_np = np.ascontiguousarray(P_v, dtype=np.float64)
+    candidates = np.ascontiguousarray(np.where(cond1 & cond2)[0], dtype=np.int64)
+    ds_cand = np.ascontiguousarray(ds[candidates], dtype=np.float64)
+
+    M = len(candidates)
+    chunk_sz = max(1, (M + n_workers - 1) // n_workers)
+    chunks = [(k, min(k + chunk_sz, M)) for k in range(0, M, chunk_sz)]
+
+    def _run(k_start_end):
+        k0, k1 = k_start_end
+        return _condition3_kernel_chunk(
+            vor.positions,
+            vor.neighbor_data,
+            vor.neighbor_ptr,
+            candidates,
+            T_np,
+            P_np,
+            ds_cand,
+            0.11,
+            0.27,
+            k0,
+            k1,
+        )
+
+    with ThreadPoolExecutor(max_workers=n_workers) as ex:
+        parts = list(ex.map(_run, chunks))
+
+    cond3_mask = np.concatenate(parts)
+    shock_zone = np.zeros(len(snap), dtype=bool)
+    shock_zone[candidates[cond3_mask]] = True
+    return shock_zone
+
+
+def find_shock_surface_threaded(snap, vor, shock_zone, gamma=5 / 3, n_workers=None):
+    """Thread-pool parallel version of :func:`find_shock_surface`.
+
+    Splits the shock-zone cell list into ``n_workers`` contiguous chunks and
+    dispatches each to a thread running :func:`_shock_surface_kernel_chunk`.
+    Numba's GIL release means the ray-tracing runs in true parallel; all
+    threads share the same numpy arrays with zero copying.
+
+    :param snap: Loaded RICH snapshot.
+    :type snap: :class:`~richio.data.Snapshot`
+    :param vor: Voronoi graph from :func:`build_voronoi`.
+    :type vor: :class:`types.SimpleNamespace`
+    :param shock_zone: Boolean shock-zone mask from :func:`find_shock_zone`.
+    :type shock_zone: :class:`numpy.ndarray` (bool)
+    :param gamma: Adiabatic index.  Defaults to 5/3.
+    :type gamma: float
+    :param n_workers: Number of threads.  Defaults to ``os.cpu_count()``.
+    :type n_workers: int or None
+    :returns: Same namespace as :func:`find_shock_surface`.
+    :rtype: :class:`types.SimpleNamespace`
+    """
+    if n_workers is None:
+        n_workers = os.cpu_count()
+
+    P_v = snap.P.v
+    rho_v = snap.rho.v
+    grad_P = np.stack([snap.DpDx.v, snap.DpDy.v, snap.DpDz.v], axis=-1)
+    grad_rho = np.stack([snap.DrhoDx.v, snap.DrhoDy.v, snap.DrhoDz.v], axis=-1)
+    grad_T = (grad_P.T / rho_v - P_v * grad_rho.T / rho_v**2).T
+    norm_gT = np.linalg.norm(grad_T, axis=-1, keepdims=True)
+    ds = np.where(norm_gT > 0, -grad_T / norm_gT, 0.0)
+
+    T_np = np.ascontiguousarray(P_v / rho_v, dtype=np.float64)
+    P_np = np.ascontiguousarray(P_v, dtype=np.float64)
+    rho_np = np.ascontiguousarray(rho_v, dtype=np.float64)
+    shock_mask = np.asarray(shock_zone, dtype=np.bool_)
+    idx_shock = np.ascontiguousarray(np.where(shock_zone)[0], dtype=np.int64)
+    divV_shock = np.ascontiguousarray(snap.divV.v[idx_shock], dtype=np.float64)
+    ds_shock = np.ascontiguousarray(ds[idx_shock], dtype=np.float64)
+
+    S = len(idx_shock)
+    chunk_sz = max(1, (S + n_workers - 1) // n_workers)
+    chunks = [(i, min(i + chunk_sz, S)) for i in range(0, S, chunk_sz)]
+
+    def _run(i_start_end):
+        i0, i1 = i_start_end
+        return _shock_surface_kernel_chunk(
+            vor.positions,
+            vor.neighbor_data,
+            vor.neighbor_ptr,
+            T_np,
+            P_np,
+            rho_np,
+            shock_mask,
+            idx_shock,
+            divV_shock,
+            ds_shock,
+            gamma,
+            i0,
+            i1,
+        )
+
+    with ThreadPoolExecutor(max_workers=n_workers) as ex:
+        parts = list(ex.map(_run, chunks))
+
+    M_T_all = np.concatenate([r[0] for r in parts])
+    M_P_all = np.concatenate([r[1] for r in parts])
+    M_rho_all = np.concatenate([r[2] for r in parts])
+    i_surf_all = np.concatenate([r[3] for r in parts])
+    i_pre_all = np.concatenate([r[4] for r in parts])
+    i_post_all = np.concatenate([r[5] for r in parts])
+
+    surface_mask = np.zeros(len(snap), dtype=bool)
+    pre_mask = np.zeros(len(snap), dtype=bool)
+    post_mask = np.zeros(len(snap), dtype=bool)
+    surface_mask[idx_shock[i_surf_all]] = True
+    pre_mask[i_pre_all] = True
+    post_mask[i_post_all] = True
+
+    return SimpleNamespace(
+        surface_mask=surface_mask,
+        pre_mask=pre_mask,
+        post_mask=post_mask,
+        mach_T=M_T_all,
+        mach_P=M_P_all,
+        mach_rho=M_rho_all,
     )
