@@ -704,6 +704,120 @@ class Snapshot:
         sliced_data = self._get_data(data)[i].in_base(unit_system)
         return sliced_data, xspace, yspace
 
+    def clip(
+        self,
+        box: ArrayLike | None = None,
+        center: ArrayLike | None = None,
+        width: float | u.unyt_quantity | ArrayLike | None = None,
+        mask: ArrayLike | None = None,
+        X: str | ArrayLike = "X",
+        Y: str | ArrayLike = "Y",
+        Z: str | ArrayLike = "Z",
+    ) -> "ClippedSnapshot":
+        """Return a :class:`ClippedSnapshot` holding only a region of cells.
+
+        The clip is a *lazy view*: it stores only this snapshot, a boolean
+        selection mask, and the clip box.  No field data is copied — each field
+        access on the clip re-reads the parent field and applies the mask, so
+        the clip is a drop-in :class:`Snapshot` that geometry methods
+        (:meth:`project`, :meth:`slice`) and the shock finder operate on
+        unchanged.
+
+        The region can be specified in any combination of:
+
+        * ``box`` — explicit bounds ``[x0, y0, z0, x1, y1, z1]``;
+        * ``center`` + ``width`` — an axis-aligned box of side ``width``
+          (scalar or per-axis) centred on ``center``;
+        * ``mask`` — an arbitrary boolean array of shape ``(N,)`` or an array of
+          integer indices.
+
+        When several are given they are combined with logical AND.  Bare
+        (unitless) numbers for ``box`` / ``center`` / ``width`` are interpreted
+        in code length units (``units.lscale``).
+
+        :param box: Explicit bounds ``[x0, y0, z0, x1, y1, z1]``.
+        :type box: ArrayLike or None
+        :param center: Box centre ``[cx, cy, cz]`` (used with ``width``).
+        :type center: ArrayLike or None
+        :param width: Box side length — scalar or ``[wx, wy, wz]`` (used with
+                      ``center``).
+        :type width: float or :class:`unyt.unyt_quantity` or ArrayLike or None
+        :param mask: Boolean mask ``(N,)`` or integer index array.
+        :type mask: ArrayLike or None
+        :param X: x-coordinate field name or array. Defaults to ``"X"``.
+        :type X: str or ArrayLike
+        :param Y: y-coordinate field name or array. Defaults to ``"Y"``.
+        :type Y: str or ArrayLike
+        :param Z: z-coordinate field name or array. Defaults to ``"Z"``.
+        :type Z: str or ArrayLike
+        :returns: A lazy regional view of this snapshot.
+        :rtype: :class:`ClippedSnapshot`
+        :raises ValueError: If no region is specified, or if ``center`` is given
+                            without ``width`` (or vice versa).
+
+        Examples::
+
+            clip = snap.clip(box=[-1, -1, -1, 1, 1, 1])
+            clip = snap.clip(center=[0, 0, 0], width=snap.box[3] / 4)
+            clip = snap.clip(mask=snap.density.v > 1e-15)
+        """
+        x = self._get_data(X)
+        y = self._get_data(Y)
+        z = self._get_data(Z)
+
+        sel = np.ones(len(x), dtype=bool)
+        clip_box = None
+
+        def _as_length(val):
+            # Attach code length units to bare numbers, mirroring to_2dgrid.
+            if isinstance(val, (u.unyt_array, u.unyt_quantity)):
+                return val
+            return np.asarray(val, dtype=float) * units.lscale
+
+        if (center is None) != (width is None):
+            raise ValueError("`center` and `width` must be given together.")
+
+        if center is not None:
+            center = _as_length(center)
+            half = _as_length(width) / 2
+            # broadcast a scalar half-width to all three axes
+            half = half * np.ones(3) if np.ndim(half.value) == 0 else half
+            lo = center - half
+            hi = center + half
+            box = [lo[0], lo[1], lo[2], hi[0], hi[1], hi[2]]
+
+        if box is not None:
+            x0, y0, z0, x1, y1, z1 = (_as_length(b) for b in box)
+            sel &= (x >= x0) & (x <= x1)
+            sel &= (y >= y0) & (y <= y1)
+            sel &= (z >= z0) & (z <= z1)
+            clip_box = u.unyt_array([x0, y0, z0, x1, y1, z1])
+
+        if mask is not None:
+            mask = np.asarray(mask)
+            if mask.dtype == bool:
+                sel &= mask
+            else:  # integer indices
+                idx_mask = np.zeros(len(x), dtype=bool)
+                idx_mask[mask] = True
+                sel &= idx_mask
+
+        if box is None and mask is None:
+            raise ValueError("No region specified: pass `box`, `center`+`width`, or `mask`.")
+
+        # When no explicit box was given, frame the clip on the bounding box of
+        # the selected cells so projections/slices default to the region.
+        if clip_box is None:
+            if sel.any():
+                xs, ys, zs = x[sel], y[sel], z[sel]
+                clip_box = u.unyt_array(
+                    [xs.min(), ys.min(), zs.min(), xs.max(), ys.max(), zs.max()]
+                )
+            else:
+                clip_box = self.box
+
+        return ClippedSnapshot(self, sel, clip_box)
+
 
 class SnapshotH5(Snapshot):
     """RICH snapshot backed by a single HDF5 file.
@@ -962,6 +1076,87 @@ class SnapshotNPY(Snapshot):
             length = len(self[key])
             break
         return length
+
+
+class ClippedSnapshot(Snapshot):
+    """A lazy regional view of a :class:`Snapshot` (a "sub-snapshot").
+
+    Created via :meth:`Snapshot.clip`.  Holds only a reference to the parent
+    snapshot, a boolean selection mask over the parent's cells, and the clip
+    box — **no field data is copied**.  Each field access re-reads the parent
+    field from disk and applies the mask, so the clip behaves as a drop-in
+    :class:`Snapshot`: :meth:`project`, :meth:`slice`, the plotter, and the
+    shock finder all work on it unchanged, returning per-cell results of length
+    ``len(clip)``.
+
+    Because :class:`SnapshotH5` already concatenates data across MPI ranks
+    before returning a field, the mask is a single flat array in the parent's
+    absolute index space — ranks need no special handling here.
+
+    :param parent: The snapshot being clipped.
+    :type parent: :class:`Snapshot`
+    :param mask: Boolean array of shape ``(len(parent),)`` selecting cells.
+    :type mask: :class:`numpy.ndarray`
+    :param box: Six-element ``[x0, y0, z0, x1, y1, z1]`` clip bounds returned by
+                this clip's ``box`` field.
+    :type box: :class:`unyt.unyt_array`
+
+    Attributes
+    ----------
+    parent : :class:`Snapshot`
+        The snapshot this clip is a view of.
+    mask : :class:`numpy.ndarray`
+        Boolean selection mask over the parent's cells.
+    """
+
+    def __init__(self, parent: "Snapshot", mask: np.ndarray, box: u.unyt_array):
+        self.parent = parent
+        self.mask = np.asarray(mask, dtype=bool)
+        self._box = box
+        self.path = parent.path
+        self.snapnum = parent.snapnum
+        self.plots = SnapshotPlotter(self)  # plotter rebound to this clip
+        self._field_aliases = parent._field_aliases  # for info()/_field_info
+
+    def _resolve_field_name(self, key: str) -> str:
+        """Resolve *key* to a canonical field name via the parent's alias table."""
+        return self.parent._resolve_field_name(key)
+
+    def __getitem__(self, key) -> u.unyt_array:
+        """Return a field restricted to the clipped region.
+
+        Per-cell fields (length equal to the parent's cell count) are indexed
+        with the selection mask; the ``Box`` field returns the clip box; all
+        other metadata (e.g. scalar ``Time``/``Cycle``) passes through
+        unchanged.
+
+        :param key: Field name (or alias), or a tuple ``(field, slice)``.
+        :type key: str or tuple
+        :returns: Masked field data with physical units attached.
+        :rtype: :class:`unyt.unyt_array`
+        """
+        if isinstance(key, tuple):
+            field, idx = key[0], key[1]
+        else:
+            field, idx = key, slice(None)
+
+        canon = self._resolve_field_name(field)
+
+        if canon == "Box":
+            return self._box[idx]
+
+        arr = self.parent[field]
+        if np.ndim(arr) > 0 and len(arr) == len(self.parent):
+            return arr[self.mask][idx]
+        return arr  # scalar / metadata field: pass through unmasked
+
+    def __len__(self) -> int:
+        """Return the number of cells selected by the clip mask."""
+        return int(self.mask.sum())
+
+    def keys(self) -> list:
+        """Return the parent snapshot's field names (the clip exposes the same fields)."""
+        return self.parent.keys()
 
 
 def _parse_plane(plane, x, y, z):
