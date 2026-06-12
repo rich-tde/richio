@@ -16,6 +16,14 @@ Public API
 ----------
 :func:`build_voronoi`
     Build the Voronoi adjacency graph (CSR format) from cell centres.
+:func:`build_knn`
+    Build a *k*-NN graph (same CSR format); a cheap, clustering-robust
+    drop-in for :func:`build_voronoi` that scales to ~80M cells.  Pass
+    ``cells=shock_candidates(snap).candidates`` to build only the rows the
+    shockfinder needs.
+:func:`shock_candidates`
+    Conditions 1 & 2 candidate cells — the only cells whose neighbours are
+    ever used; feed to :func:`build_knn` ``cells`` to restrict the query.
 :func:`find_shock_zone`
     Flag shock-zone cells via the three Schaal+14 criteria.
 :func:`find_shock_surface`
@@ -23,7 +31,9 @@ Public API
 """
 
 from richio.shockfinder.sf import (
+    build_knn,
     build_voronoi,
     find_shock_surface,
     find_shock_zone,
+    shock_candidates,
 )
