@@ -39,7 +39,7 @@ Floats = float | NDArray[np.floating]
 # ---------------------------------------------------------------------------- #
 
 
-def delta(M: Floats, gamma: float = 5 / 3) -> Floats:
+def delta(M: Floats, gamma: Floats = 5 / 3) -> Floats:
     """Dimensionless entropy jump across a shock of Mach number *M*.
 
     :param M: Mach number upstream of the shock (M ≥ 1).
@@ -56,7 +56,7 @@ def delta(M: Floats, gamma: float = 5 / 3) -> Floats:
     return delta
 
 
-def R2M(R: Floats, gamma: float = 5 / 3) -> Floats:
+def R2M(R: Floats, gamma: Floats = 5 / 3) -> Floats:
     """Mach number from density compression ratio ρ₂/ρ₁ (Rankine-Hugoniot).
 
     :param R: Density ratio ρ₂/ρ₁ across the shock.
@@ -70,7 +70,7 @@ def R2M(R: Floats, gamma: float = 5 / 3) -> Floats:
 rho2rho1M = R2M  # alias
 
 
-def M2R(M: Floats, gamma: float = 5 / 3) -> Floats:
+def M2R(M: Floats, gamma: Floats = 5 / 3) -> Floats:
     """Density compression ratio ρ₂/ρ₁ from Mach number (Rankine-Hugoniot).
 
     :param M: Mach number upstream of the shock.
@@ -84,7 +84,7 @@ def M2R(M: Floats, gamma: float = 5 / 3) -> Floats:
 Mrho2rho1 = M2R  # alias
 
 
-def MT2T1(M: Floats, gamma: float = 5 / 3) -> Floats:
+def MT2T1(M: Floats, gamma: Floats = 5 / 3) -> Floats:
     """Temperature jump T₂/T₁ across a shock of Mach number *M*.
 
     :param M: Upstream Mach number.
@@ -95,7 +95,7 @@ def MT2T1(M: Floats, gamma: float = 5 / 3) -> Floats:
     return (2 * gamma * M**2 - (gamma - 1)) * ((gamma - 1) * M**2 + 2) / ((gamma + 1) ** 2 * M**2)
 
 
-def MP2P1(M: Floats, gamma: float = 5 / 3) -> Floats:
+def MP2P1(M: Floats, gamma: Floats = 5 / 3) -> Floats:
     """Pressure jump P₂/P₁ across a shock of Mach number *M*.
 
     :param M: Upstream Mach number.
@@ -106,7 +106,7 @@ def MP2P1(M: Floats, gamma: float = 5 / 3) -> Floats:
     return (2 * gamma * M**2) / (gamma + 1) - (gamma - 1) / (gamma + 1)
 
 
-def T2T1M(T2_T1: Floats, gamma: float = 5 / 3) -> Floats:
+def T2T1M(T2_T1: Floats, gamma: Floats = 5 / 3) -> Floats:
     """Mach number inferred from temperature jump T₂/T₁.
 
     :param T2_T1: Observed temperature ratio across the shock.
@@ -119,7 +119,7 @@ def T2T1M(T2_T1: Floats, gamma: float = 5 / 3) -> Floats:
     return np.sqrt((minusb + np.sqrt(minusb**2 + 8 * a * (gamma - 1))) / (2 * a))
 
 
-def P2P1M(P2_P1: Floats, gamma: float = 5 / 3) -> Floats:
+def P2P1M(P2_P1: Floats, gamma: Floats = 5 / 3) -> Floats:
     """Mach number inferred from pressure jump P₂/P₁.
 
     :param P2_P1: Observed pressure ratio across the shock.
