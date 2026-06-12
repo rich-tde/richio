@@ -30,10 +30,4 @@ Public API
     Identify shock-surface cells and compute Rankine-Hugoniot Mach numbers.
 """
 
-from richio.shockfinder.sf import (
-    build_knn,
-    build_voronoi,
-    find_shock_surface,
-    find_shock_zone,
-    shock_candidates,
-)
+from richio.shockfinder.sf import *

@@ -17,23 +17,29 @@
 #  <https://arxiv.org/abs/1407.4117>.
 
 from collections import defaultdict
-import math as _math
-from types import SimpleNamespace
-
 from concurrent.futures import ThreadPoolExecutor
+import math as _math
 import os
+from types import SimpleNamespace
+from typing import TYPE_CHECKING
 
 from numba import njit, prange
 import numpy as np
-from numpy.typing import ArrayLike
+from numpy.typing import ArrayLike, NDArray
 from scipy.spatial import Voronoi, cKDTree
+
+if TYPE_CHECKING:
+    from richio.data import Snapshot
+
+# Scalar-or-array argument/return for the closed-form Rankine-Hugoniot helpers.
+Floats = float | NDArray[np.floating]
 
 # ---------------------------------------------------------------------------- #
 #                             Analytical Functions                             #
 # ---------------------------------------------------------------------------- #
 
 
-def delta(M, gamma=5 / 3):
+def delta(M: Floats, gamma: float = 5 / 3) -> Floats:
     """Dimensionless entropy jump across a shock of Mach number *M*.
 
     :param M: Mach number upstream of the shock (M ≥ 1).
@@ -50,7 +56,7 @@ def delta(M, gamma=5 / 3):
     return delta
 
 
-def R2M(R, gamma=5 / 3):
+def R2M(R: Floats, gamma: float = 5 / 3) -> Floats:
     """Mach number from density compression ratio ρ₂/ρ₁ (Rankine-Hugoniot).
 
     :param R: Density ratio ρ₂/ρ₁ across the shock.
@@ -64,7 +70,7 @@ def R2M(R, gamma=5 / 3):
 rho2rho1M = R2M  # alias
 
 
-def M2R(M, gamma=5 / 3):
+def M2R(M: Floats, gamma: float = 5 / 3) -> Floats:
     """Density compression ratio ρ₂/ρ₁ from Mach number (Rankine-Hugoniot).
 
     :param M: Mach number upstream of the shock.
@@ -78,7 +84,7 @@ def M2R(M, gamma=5 / 3):
 Mrho2rho1 = M2R  # alias
 
 
-def MT2T1(M, gamma=5 / 3):
+def MT2T1(M: Floats, gamma: float = 5 / 3) -> Floats:
     """Temperature jump T₂/T₁ across a shock of Mach number *M*.
 
     :param M: Upstream Mach number.
@@ -89,7 +95,7 @@ def MT2T1(M, gamma=5 / 3):
     return (2 * gamma * M**2 - (gamma - 1)) * ((gamma - 1) * M**2 + 2) / ((gamma + 1) ** 2 * M**2)
 
 
-def MP2P1(M, gamma=5 / 3):
+def MP2P1(M: Floats, gamma: float = 5 / 3) -> Floats:
     """Pressure jump P₂/P₁ across a shock of Mach number *M*.
 
     :param M: Upstream Mach number.
@@ -100,7 +106,7 @@ def MP2P1(M, gamma=5 / 3):
     return (2 * gamma * M**2) / (gamma + 1) - (gamma - 1) / (gamma + 1)
 
 
-def T2T1M(T2_T1, gamma=5 / 3):
+def T2T1M(T2_T1: Floats, gamma: float = 5 / 3) -> Floats:
     """Mach number inferred from temperature jump T₂/T₁.
 
     :param T2_T1: Observed temperature ratio across the shock.
@@ -113,7 +119,7 @@ def T2T1M(T2_T1, gamma=5 / 3):
     return np.sqrt((minusb + np.sqrt(minusb**2 + 8 * a * (gamma - 1))) / (2 * a))
 
 
-def P2P1M(P2_P1, gamma=5 / 3):
+def P2P1M(P2_P1: Floats, gamma: float = 5 / 3) -> Floats:
     """Mach number inferred from pressure jump P₂/P₁.
 
     :param P2_P1: Observed pressure ratio across the shock.
@@ -130,8 +136,11 @@ def P2P1M(P2_P1, gamma=5 / 3):
 
 
 def build_voronoi(
-    snap=None, X: str | ArrayLike = "X", Y: str | ArrayLike = "Y", Z: str | ArrayLike = "Z"
-):
+    snap: "Snapshot | None" = None,
+    X: str | ArrayLike = "X",
+    Y: str | ArrayLike = "Y",
+    Z: str | ArrayLike = "Z",
+) -> SimpleNamespace:
     """Build a Voronoi adjacency graph from snapshot cell centres. Suitable for
     small data (<1,000,000 cells).
 
@@ -178,10 +187,10 @@ def build_voronoi(
         adj[j].append(i)
 
     n = len(positions)
-    sizes = np.array([len(adj[k]) for k in range(n)], dtype=np.int64)
-    neighbor_ptr = np.zeros(n + 1, dtype=np.int64)
+    sizes = np.array([len(adj[k]) for k in range(n)], dtype=np.int32)
+    neighbor_ptr = np.zeros(n + 1, dtype=np.int32)
     np.cumsum(sizes, out=neighbor_ptr[1:])
-    neighbor_data = np.array([j for k in range(n) for j in adj[k]], dtype=np.int64)
+    neighbor_data = np.array([j for k in range(n) for j in adj[k]], dtype=np.int32)
 
     print(f"Done.  Mean neighbours/cell: {sizes.mean():.1f}", flush=True)
     return SimpleNamespace(
@@ -192,7 +201,7 @@ def build_voronoi(
 
 
 def build_knn(
-    snap=None,
+    snap: "Snapshot | None" = None,
     X: str | ArrayLike = "X",
     Y: str | ArrayLike = "Y",
     Z: str | ArrayLike = "Z",
@@ -200,7 +209,7 @@ def build_knn(
     cells: ArrayLike | None = None,
     workers: int = -1,
     batch: int = 4_000_000,
-):
+) -> SimpleNamespace:
     """Build a *k*-nearest-neighbour graph as a drop-in for :func:`build_voronoi`.
 
     Returns the same ``SimpleNamespace(positions, neighbor_data, neighbor_ptr)``
@@ -223,7 +232,7 @@ def build_knn(
     shockfinder traces from - the conditions 1 & 2 candidates (see
     :func:`shock_candidates`).  Passing those via ``cells`` restricts the query
     to that subset (≈ a quarter of cells on TDE data), cutting query time and
-    graph memory ~4× while producing an identical catalogue (the omitted rows
+    graph memory ~4x while producing an identical catalogue (the omitted rows
     are never indexed).
 
     :param snap: Loaded RICH snapshot, or ``None`` to pass coordinates directly.
@@ -310,7 +319,15 @@ def build_knn(
 
 
 @njit(cache=True)
-def _next_cell(positions, neighbor_data, neighbor_ptr, idx, dx, dy, dz):
+def _next_cell(
+    positions: NDArray[np.float64],
+    neighbor_data: NDArray[np.integer],
+    neighbor_ptr: NDArray[np.integer],
+    idx: int,
+    dx: float,
+    dy: float,
+    dz: float,
+) -> int:
     """JIT kernel: find the next Voronoi cell along a ray (Springel 2010 §2).
 
     The perpendicular-bisector face between generators xᵢ and xⱼ has normal
@@ -355,8 +372,16 @@ def _next_cell(positions, neighbor_data, neighbor_ptr, idx, dx, dy, dz):
 
 @njit(parallel=True, cache=True)
 def _condition3_kernel(
-    positions, neighbor_data, neighbor_ptr, candidates, T_np, P_np, ds_np, DlogT_min, DlogP_min
-):
+    positions: NDArray[np.float64],
+    neighbor_data: NDArray[np.integer],
+    neighbor_ptr: NDArray[np.integer],
+    candidates: NDArray[np.int64],
+    T_np: NDArray[np.float64],
+    P_np: NDArray[np.float64],
+    ds_np: NDArray[np.float64],
+    DlogT_min: float,
+    DlogP_min: float,
+) -> NDArray[np.bool_]:
     """JIT kernel: evaluate Schaal+14 condition 3 for candidate shock cells.
 
     Traces a ray in ±**ds** from each candidate to find the pre- and
@@ -402,17 +427,17 @@ def _condition3_kernel(
 
 @njit(cache=True)
 def _ray_tracer(
-    positions,
-    neighbor_data,
-    neighbor_ptr,
-    shock_mask,
-    idx_shock,
-    idx_cell,
-    divV_shock,
-    ds_shock,
-    sign,
-    max_steps,
-):
+    positions: NDArray[np.float64],
+    neighbor_data: NDArray[np.integer],
+    neighbor_ptr: NDArray[np.integer],
+    shock_mask: NDArray[np.bool_],
+    idx_shock: NDArray[np.int64],
+    idx_cell: int,
+    divV_shock: NDArray[np.float64],
+    ds_shock: NDArray[np.float64],
+    sign: int,
+    max_steps: int,
+) -> int:
     """JIT kernel: walk along ±**ds** from a shock cell until leaving the zone.
 
     Steps cell-by-cell through the Voronoi graph in the ``sign * ds`` direction
@@ -467,19 +492,26 @@ def _ray_tracer(
 
 @njit(parallel=True, cache=True)
 def _shock_surface_kernel(
-    positions,
-    neighbor_data,
-    neighbor_ptr,
-    T_np,
-    P_np,
-    rho_np,
-    shock_mask,
-    idx_shock,
-    divV_shock,
-    ds_shock,
-    gamma,
-    max_steps=500,
-):
+    positions: NDArray[np.float64],
+    neighbor_data: NDArray[np.integer],
+    neighbor_ptr: NDArray[np.integer],
+    T_np: NDArray[np.float64],
+    P_np: NDArray[np.float64],
+    rho_np: NDArray[np.float64],
+    shock_mask: NDArray[np.bool_],
+    idx_shock: NDArray[np.int64],
+    divV_shock: NDArray[np.float64],
+    ds_shock: NDArray[np.float64],
+    gamma: float,
+    max_steps: int = 500,
+) -> tuple[
+    NDArray[np.float64],
+    NDArray[np.float64],
+    NDArray[np.float64],
+    NDArray[np.int64],
+    NDArray[np.int64],
+    NDArray[np.int64],
+]:
     """JIT kernel: full shock-surface finder (Schaal+14 §2.2).
 
     For each shock-zone cell traces pre- and post-shock rays via
@@ -602,18 +634,18 @@ def _shock_surface_kernel(
 
 @njit(cache=True)
 def _condition3_kernel_chunk(
-    positions,
-    neighbor_data,
-    neighbor_ptr,
-    candidates,
-    T_np,
-    P_np,
-    ds_np,
-    DlogT_min,
-    DlogP_min,
-    k_start,
-    k_end,
-):
+    positions: NDArray[np.float64],
+    neighbor_data: NDArray[np.integer],
+    neighbor_ptr: NDArray[np.integer],
+    candidates: NDArray[np.int64],
+    T_np: NDArray[np.float64],
+    P_np: NDArray[np.float64],
+    ds_np: NDArray[np.float64],
+    DlogT_min: float,
+    DlogP_min: float,
+    k_start: int,
+    k_end: int,
+) -> NDArray[np.bool_]:
     """Serial condition-3 check for ``candidates[k_start:k_end]``.
 
     :param k_start: First candidate index (inclusive).
@@ -648,21 +680,28 @@ def _condition3_kernel_chunk(
 
 @njit(cache=True)
 def _shock_surface_kernel_chunk(
-    positions,
-    neighbor_data,
-    neighbor_ptr,
-    T_np,
-    P_np,
-    rho_np,
-    shock_mask,
-    idx_shock,
-    divV_shock,
-    ds_shock,
-    gamma,
-    i_start,
-    i_end,
-    max_steps=500,
-):
+    positions: NDArray[np.float64],
+    neighbor_data: NDArray[np.integer],
+    neighbor_ptr: NDArray[np.integer],
+    T_np: NDArray[np.float64],
+    P_np: NDArray[np.float64],
+    rho_np: NDArray[np.float64],
+    shock_mask: NDArray[np.bool_],
+    idx_shock: NDArray[np.int64],
+    divV_shock: NDArray[np.float64],
+    ds_shock: NDArray[np.float64],
+    gamma: float,
+    i_start: int,
+    i_end: int,
+    max_steps: int = 500,
+) -> tuple[
+    NDArray[np.float64],
+    NDArray[np.float64],
+    NDArray[np.float64],
+    NDArray[np.int64],
+    NDArray[np.int64],
+    NDArray[np.int64],
+]:
     """Serial shock-surface kernel for ``idx_shock[i_start:i_end]``.
 
     Reads the full shared arrays (``idx_shock``, ``divV_shock``, ``ds_shock``)
@@ -740,7 +779,7 @@ def _shock_surface_kernel_chunk(
 # ---------------------------------------------------------------------------- #
 
 
-def shock_candidates(snap, gamma=5 / 3):
+def shock_candidates(snap: "Snapshot", gamma: float = 5 / 3) -> SimpleNamespace:
     """Compute shock-zone *candidate* cells (Schaal+14 conditions 1 & 2).
 
     Conditions 1 (∇·v < 0) and 2 (∇T·∇P > 0) are cheap, purely local cuts.
@@ -786,7 +825,12 @@ def shock_candidates(snap, gamma=5 / 3):
     return SimpleNamespace(candidates=candidates, ds=ds)
 
 
-def find_shock_zone(snap, vor, gamma=5 / 3):
+def find_shock_zone(
+    snap: "Snapshot",
+    vor: SimpleNamespace,
+    gamma: float = 5 / 3,
+    mach_min: float = 1.3,
+) -> NDArray[np.bool_]:
     """Identify shock-zone cells via the three Schaal+14 conditions.
 
     * **Condition 1** - converging flow: ∇·v < 0.
@@ -819,6 +863,8 @@ def find_shock_zone(snap, vor, gamma=5 / 3):
 
     ds_cand = np.ascontiguousarray(cand.ds[candidates], dtype=np.float64)
 
+    DlogT_min = np.log10(MT2T1(mach_min))  # = 0.11 when M = 1.3
+    DlogP_min = np.log10(MP2P1(mach_min))  # = 0.27 when M = 1.3
     cond3_mask = _condition3_kernel(
         vor.positions,
         vor.neighbor_data,
@@ -827,8 +873,8 @@ def find_shock_zone(snap, vor, gamma=5 / 3):
         T_np,
         P_np,
         ds_cand,
-        0.11,
-        0.27,
+        DlogT_min=DlogT_min,
+        DlogP_min=DlogP_min,
     )
 
     shock_zone = np.zeros(len(snap), dtype=bool)
@@ -841,7 +887,12 @@ def find_shock_zone(snap, vor, gamma=5 / 3):
 # ---------------------------------------------------------------------------- #
 
 
-def find_shock_surface(snap, vor, shock_zone, gamma=5 / 3):
+def find_shock_surface(
+    snap: "Snapshot",
+    vor: SimpleNamespace,
+    shock_zone: NDArray[np.bool_],
+    gamma: float = 5 / 3,
+) -> SimpleNamespace:
     """Locate shock-surface cells and estimate Mach numbers (Schaal+14 §2.2).
 
     For each cell in the shock zone, traces rays in ±**ds** until exiting the
@@ -924,7 +975,13 @@ def find_shock_surface(snap, vor, shock_zone, gamma=5 / 3):
 # ---------------------------------------------------------------------------- #
 
 
-def find_shock_zone_threaded(snap, vor, gamma=5 / 3, n_workers=None):
+def find_shock_zone_threaded(
+    snap: "Snapshot",
+    vor: SimpleNamespace,
+    gamma: float = 5 / 3,
+    n_workers: int | None = None,
+    mach_min: float = 1.3,
+) -> NDArray[np.bool_]:
     """Thread-pool parallel version of :func:`find_shock_zone`.
 
     Dispatches condition-3 evaluation across ``n_workers`` OS threads using
@@ -962,6 +1019,9 @@ def find_shock_zone_threaded(snap, vor, gamma=5 / 3, n_workers=None):
     chunk_sz = max(1, (M + n_workers - 1) // n_workers)
     chunks = [(k, min(k + chunk_sz, M)) for k in range(0, M, chunk_sz)]
 
+    DlogT_min = np.log10(MT2T1(mach_min))  # = 0.11 when M = 1.3
+    DlogP_min = np.log10(MP2P1(mach_min))  # = 0.27 when M = 1.3
+
     def _run(k_start_end):
         k0, k1 = k_start_end
         return _condition3_kernel_chunk(
@@ -972,8 +1032,8 @@ def find_shock_zone_threaded(snap, vor, gamma=5 / 3, n_workers=None):
             T_np,
             P_np,
             ds_cand,
-            0.11,
-            0.27,
+            DlogT_min,
+            DlogP_min,
             k0,
             k1,
         )
@@ -987,7 +1047,13 @@ def find_shock_zone_threaded(snap, vor, gamma=5 / 3, n_workers=None):
     return shock_zone
 
 
-def find_shock_surface_threaded(snap, vor, shock_zone, gamma=5 / 3, n_workers=None):
+def find_shock_surface_threaded(
+    snap: "Snapshot",
+    vor: SimpleNamespace,
+    shock_zone: NDArray[np.bool_],
+    gamma: float = 5 / 3,
+    n_workers: int | None = None,
+) -> SimpleNamespace:
     """Thread-pool parallel version of :func:`find_shock_surface`.
 
     Splits the shock-zone cell list into ``n_workers`` contiguous chunks and
