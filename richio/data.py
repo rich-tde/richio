@@ -414,6 +414,7 @@ class Snapshot:
         selection: ArrayLike = None,
         endpoint: bool = False,
         plane: str | None = None,
+        workers: int = 1,
     ):
         """Interpolate cell centres onto a regular 3-D Cartesian grid.
 
@@ -505,7 +506,7 @@ class Snapshot:
             [grid_x, grid_y, grid_z], axis=-1
         )  # coordinates of the grid (query points)
 
-        i_local = _kdtree_interpolate(coords=coords, grid_coords=grid_coords)
+        i_local = _kdtree_interpolate(coords=coords, grid_coords=grid_coords, workers=workers)
 
         # Map local indices back to absolute indices in the original particle array
         if selection is not None:

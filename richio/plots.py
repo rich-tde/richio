@@ -278,6 +278,42 @@ class SnapshotPlotter:
 
         return ax, im, projected_data
 
+    def volume(self, data: str = "density", res: int = 256, **kwargs):
+        """Render a depth-cued 3-D volume image of *data*.
+
+        Thin convenience wrapper around
+        :func:`richio.render.volume_image`.  The heavy rendering stack (``yt``)
+        is imported lazily here so that ``import richio`` stays lightweight;
+        install it with ``pip install 'richio[render]'``.
+
+        :param data: Field to render.  Defaults to ``'density'``.
+        :param res: Resampling grid resolution.  Defaults to ``256``.
+        :param kwargs: Forwarded to :func:`richio.render.volume_image` (e.g.
+                       ``filename``, ``elevation``, ``n_layers``, ``cmap``).
+        :returns: Whatever :func:`richio.render.volume_image` returns (the
+                  :class:`~richio.render.grid.UniformGrid`, or
+                  ``(scene, grid)`` when ``return_scene=True``).
+        """
+        from richio.render import volume_image
+
+        return volume_image(self.snap, data, res=res, **kwargs)
+
+    def volume_movie(self, data: str = "density", res: int = 256, **kwargs):
+        """Render a rotating-camera movie of *data*.
+
+        Thin convenience wrapper around
+        :func:`richio.render.volume_movie` (lazily imports ``yt``).
+
+        :param data: Field to render.  Defaults to ``'density'``.
+        :param res: Resampling grid resolution.  Defaults to ``256``.
+        :param kwargs: Forwarded to :func:`richio.render.volume_movie` (e.g.
+                       ``filename``, ``n_frames``, ``fps``, ``elevation``).
+        :returns: The result dict from :func:`richio.render.volume_movie`.
+        """
+        from richio.render import volume_movie
+
+        return volume_movie(self.snap, data, res=res, **kwargs)
+
 
 def scalar_map(
     f: u.unyt_array | ArrayLike,

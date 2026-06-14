@@ -18,9 +18,20 @@ dependencies = [
 readme = "README.md"
 classifiers = [
     "Programming Language :: Python :: 3",
-    
+
 ]
 requires-python = ">=3.10"
+
+[project.optional-dependencies]
+# 3-D volume rendering (richio.render). Kept optional so a plain
+# `pip install richio` stays a compact reading/analysis helper.
+render = ["yt>=4.4", "imageio[ffmpeg]"]
+# Optional multi-node frame-parallel movie rendering (scripts/render_movie_mpi.py).
+# Single-node multiprocessing (volume_movie(..., n_jobs=N)) needs nothing extra and
+# is enough for a 48-core node; mpi4py only helps when spanning multiple nodes.
+# Needs a system/conda MPI; on this cluster: `module load OpenMPI` before install,
+# or `conda install -c conda-forge mpi4py`.
+mpi = ["mpi4py"]
 
 
 [tool.ruff]
