@@ -10,6 +10,9 @@ theme:
   name: readthedocs
   highlightjs: true
 
+extra_css:
+  - css/extra.css
+
 markdown_extensions:
   - admonition
   - attr_list

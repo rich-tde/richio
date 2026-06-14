@@ -1,55 +1,79 @@
 # RICHIO
 
-**RICHIO** (RICH I/O) is a lightweight Python library for reading and
-post-processing the output of
-[RICH](https://gitlab.com/eladtan/RICH/-/tree/master?ref_type=heads), an
-open-source moving-mesh radiative-hydrodynamic simulation code for astrophysics.
-It was built for the study of tidal disruption events (TDEs), but the I/O and
-analysis tools are general.
+RICHIO (RICH I/O) is a small Python library for reading and analysing the output
+of [RICH](https://gitlab.com/eladtan/RICH/-/tree/master?ref_type=heads), a
+simulation code for astrophysical gas flows. It was written to study tidal
+disruption events (stars torn apart by black holes), but the reading and
+analysis tools work just as well for any RICH run.
 
-A plain `import richio` stays a compact reading/analysis helper — the heavy
-optional capabilities (3-D volume rendering, shock finding) are kept behind
-extra installs so the core library is fast to import and easy to deploy.
+A RICH simulation writes its state to disk as a *snapshot*: the gas density,
+temperature, velocity, and so on, recorded at one moment in time. RICHIO opens a
+snapshot, hands you those quantities as NumPy-style arrays, and gives you a few
+ways to look at them.
+
+A first example:
 
 ```python
 import richio as rio
 
-snap = rio.load("snap_0042.h5")   # load an HDF5 snapshot
-snap.info()                        # print metadata + field table
-rho = snap["Density"].in_cgs()     # field access, unit-aware (unyt)
-snap.plots.peek("density")         # quick mid-plane density slice
+snap = rio.load("snap_0042.h5")    # open a snapshot
+snap.info()                         # print what's inside
+rho = snap["Density"].in_cgs()      # read a field, converted to g/cm^3
+snap.plots.peek("density")          # draw a quick density slice
 ```
 
-## What you can do with it
+## What it can do
 
-| Capability | Entry point | Install |
-|------------|-------------|---------|
-| Load snapshots (HDF5 / NPY, multi-rank) | [`rio.load`](api/data.md) | core |
-| Unit-aware field access with aliases | `snap["rho"]`, `snap.density` | core |
-| Convert between code / cgs / mks units | [`unyt`](https://unyt.readthedocs.io) integration | core |
-| Clip to a sub-region (lazy, no copy) | [`snap.clip`](guide/selecting-regions.md) | core |
-| Slices & column projections | [`snap.slice` / `snap.project`](guide/slices-and-projections.md) | core |
-| Publication-style plots | [`snap.plots`](guide/plotting.md) | core |
-| Depth-cued 3-D volume renders & movies | [`richio.render`](guide/volume-rendering.md) | `pip install "richio[render]"` |
-| Shock-zone & shock-surface detection | [`richio.shockfinder`](guide/shock-finding.md) | needs `scipy` + `numba` |
+With a plain `pip install richio` you can:
+
+- Open a snapshot in either of RICH's two on-disk formats with one call to
+  [`rio.load`](getting-started/quickstart.md). You don't need to know which
+  format you have.
+- Read any field by name. Every field comes back carrying its physical units, so
+  a density is a density and not a bare number whose scaling you have to
+  remember.
+- Convert units freely, to cgs, to SI, or back to RICH's own units, with one
+  method call.
+- Cut out a region of the simulation, such as the disrupted star or the dense
+  centre, and work with just that.
+- Make pictures: slices through the volume, column-integrated projections, and
+  publication-ready figures.
+
+Two heavier features are kept behind optional installs so the everyday library
+stays small and quick to import:
+
+- 3-D volume rendering: shaded images and rotating movies of the gas
+  (`pip install "richio[render]"`).
+- Shock finding: locating shock fronts and measuring their strength (needs
+  `scipy` and `numba`).
 
 ## Where to go next
 
-- **New here?** Start with [Installation](getting-started/installation.md) then the
-  [Quickstart](getting-started/quickstart.md).
-- **Working with data?** The User guide covers
-  [loading snapshots](guide/loading-snapshots.md),
-  [fields & aliases](guide/fields-and-aliases.md),
-  [units](guide/units.md),
-  [selecting regions](guide/selecting-regions.md),
-  [slices & projections](guide/slices-and-projections.md), and
-  [plotting](guide/plotting.md).
-- **Optional extras:** [volume rendering](guide/volume-rendering.md) and
-  [shock finding](guide/shock-finding.md).
-- **Looking up a function?** See the [API reference](api/data.md).
+If you are just starting, read [Installation](getting-started/installation.md)
+and then the [Quickstart](getting-started/quickstart.md). Together they take
+about ten minutes and cover the everyday loop of loading, reading, and plotting.
 
-!!! note "Units everywhere"
-    Every field RICHIO returns is a [`unyt`](https://unyt.readthedocs.io) array
-    carrying physical units. Code values live in RICH's solar unit system
-    (mass in M☉, length in R☉, time set by G = 1); convert at any time with
-    `.in_cgs()`, `.in_mks()`, or `.in_base("rich")`. See [Units](guide/units.md).
+After that, the user guide goes one topic at a time:
+
+- [Loading snapshots](guide/loading-snapshots.md): the two file formats and the
+  snapshot's metadata
+- [Fields and aliases](guide/fields-and-aliases.md): reading data and the many
+  names each field answers to
+- [Units](guide/units.md): what the numbers mean and how to convert them
+- [Selecting regions](guide/selecting-regions.md): working with part of a
+  snapshot
+- [Slices and projections](guide/slices-and-projections.md): turning the gas
+  into a regular grid you can plot
+- [Plotting](guide/plotting.md): one-line figures and how to style them
+- [Volume rendering](guide/volume-rendering.md) and
+  [Shock finding](guide/shock-finding.md): the optional extras
+
+To look up a specific function, see the [API reference](api/data.md).
+
+!!! note "Everything carries units"
+    Every field RICHIO returns is a [`unyt`](https://unyt.readthedocs.io) array,
+    a NumPy array that also knows its physical units. By default the numbers are
+    in RICH's own unit system: masses in solar masses, lengths in solar radii,
+    and a time unit fixed by setting the gravitational constant to 1. Convert
+    whenever you like with `.in_cgs()`, `.in_mks()`, or `.in_base("rich")`. The
+    [Units](guide/units.md) page explains this in full.

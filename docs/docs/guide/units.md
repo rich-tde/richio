@@ -1,22 +1,25 @@
 # Units
 
-Every field RICHIO returns is a [`unyt`](https://unyt.readthedocs.io) array that
-carries its physical units. This means you never have to track conversion factors
-by hand — arithmetic propagates units, and conversions are one method call.
+Every field RICHIO returns carries its physical units. Under the hood these are
+[`unyt`](https://unyt.readthedocs.io) arrays, NumPy arrays that also know whether
+they hold a density, a velocity, a temperature, and so on. This means you never
+have to track conversion factors by hand: arithmetic keeps the units straight for
+you, and switching systems is a single method call.
 
-## The RICH code unit system
+## RICH's own units
 
-RICH runs in a solar-scaled code unit system. RICHIO defines it as a `'rich'`
-unit system and registers it with unyt on import:
+RICH does its computing in a unit system scaled to the Sun. RICHIO knows this
+system as `'rich'` and registers it the moment you import the package. Three base
+units define it:
 
-| Quantity | Code unit | Approx. value |
-|----------|-----------|---------------|
-| mass | 1 solar mass (M☉) | ≈ 2 × 10³⁰ kg |
-| length | 1 solar radius (R☉) | ≈ 7 × 10⁸ m |
-| time | set by fixing **G = 1** | ≈ 1603 s |
+| Quantity | Unit | Roughly |
+|----------|------|---------|
+| mass | one solar mass | 2 × 10³⁰ kg |
+| length | one solar radius | 7 × 10⁸ m |
+| time | set by fixing G = 1 | 1603 s |
 
-All other units (density, pressure, velocity, …) are derived from these three.
-A freshly read field is in code units:
+Everything else (density, pressure, velocity, and the rest) follows from those
+three. A field you have just read is in these units:
 
 ```python
 >>> rho = snap["Density"]
@@ -24,56 +27,61 @@ A freshly read field is in code units:
 1988415860000000000000000000000*kg/Rsun**3
 ```
 
+That awkward-looking unit is a solar mass per solar radius cubed, written out in
+kilograms and solar radii. It is correct, just not how you would want to report a
+density, so convert it.
+
 ## Converting
 
-Convert to a standard base system with the usual unyt methods:
+For the two standard systems, there is a method each:
 
 ```python
 rho.in_cgs()            # g/cm**3
 rho.in_mks()            # kg/m**3
-rho.in_base("rich")     # back to RICH code units
+rho.in_base("rich")     # back to RICH's units
 ```
 
-`"rich"` is available as a base because RICHIO registered the system at import
-time. You can also target any explicit unit:
+`"rich"` works as a target here because RICHIO registered that system on import.
+You can also ask for any specific unit by name:
 
 ```python
 snap["Temperature"].to("K")
 snap["Vx"].to("km/s")
+snap["Time"].to("day")
 ```
 
-## Looking up a field's unit
+## Looking up a field's unit without reading it
 
-The `units` singleton maps field names (and aliases) to their unit via
-[`get_unit`](../api/units.md):
+Sometimes you want to know what unit a field would come in, without loading the
+data. The `units` object maps a field name (or any of its aliases) to its unit:
 
 ```python
 from richio.units import units
 
-units.get_unit("Density")             # the density code unit
-units.get_unit("rho")                 # aliases work too
-units.get_unit("mystery", default=None)  # None instead of raising for unknown keys
+units.get_unit("Density")                # the density unit
+units.get_unit("rho")                     # aliases work here too
+units.get_unit("mystery", default=None)   # returns None instead of raising
 ```
 
-Without a `default`, an unknown key raises `ValueError`.
+Without a `default`, asking for an unknown field raises `ValueError`.
 
-## Bringing external arrays into the RICH registry
+## Bringing your own arrays into the RICH system
 
-If you build a `unyt` array yourself (or load one from elsewhere), it won't know
-about the `'rich'` system until you re-home it in RICHIO's registry.
-[`to_rich_units`](../api/units.md) does exactly that — it keeps the value and
-unit unchanged but swaps in the RICH registry so `.in_base("rich")` works
-afterward:
+If you build a `unyt` array yourself, or load one from somewhere else, it won't
+know about the `'rich'` system, so `.in_base("rich")` would fail on it. The
+`to_rich_units` helper fixes that. It leaves the value and the unit untouched and
+re-registers the array against RICHIO's unit system:
 
 ```python
 from richio.units import to_rich_units
 import unyt as u
 
-q = u.unyt_quantity(1.0, "g/cm**3")   # plain unyt, no 'rich' system
-q = to_rich_units(q)                  # now in the RICH registry, expressed in code units
+q = u.unyt_quantity(1.0, "g/cm**3")   # a plain unyt quantity
+q = to_rich_units(q)                  # now convertible with .in_base("rich")
 ```
 
 ## Further reading
 
-unyt does far more than convert — array math, equality across units, custom
-units, and more. See the [unyt documentation](https://unyt.readthedocs.io/en/stable/).
+unyt does far more than convert. It handles array maths that respects units,
+comparisons across units, defining your own units, and more. See its
+[documentation](https://unyt.readthedocs.io/en/stable/).

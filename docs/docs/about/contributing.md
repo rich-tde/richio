@@ -20,7 +20,7 @@ mkdocs build --strict   # one-off build into docs/site (fails on broken links)
 ```
 
 `mkdocs build` regenerates `docs/site/`; that directory is build output (it is
-git-ignored — no need to edit or commit it). `--strict` turns warnings (broken
+git-ignored, so there is no need to edit or commit it). `--strict` turns warnings (broken
 links, missing pages) into errors, so it is the recommended way to catch
 mistakes and could gate CI.
 
@@ -46,7 +46,7 @@ docs/              # this documentation site
 ## Where things are documented
 
 When you add or change a field, edit **`richio/config.py`** (`FIELD_REGISTRY`)
-only — it is the single source of truth for names, aliases, and units, and both
+only. It is the single source of truth for names, aliases, and units, and both
 the library and these docs read from it.
 
 ## License

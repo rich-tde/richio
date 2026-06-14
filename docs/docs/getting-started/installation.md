@@ -1,10 +1,12 @@
 # Installation
 
-RICHIO targets **Python ≥ 3.10**.
+RICHIO needs Python 3.10 or newer.
 
-## Core install
+## The basic install
 
-Clone the repository and install in editable mode from its root directory:
+There is no PyPI release yet, so install from the source. Clone the repository
+and install it in editable mode (the `-e` flag lets you pull updates with
+`git pull` without reinstalling):
 
 ```bash
 git clone https://github.com/YujieH3/richio.git
@@ -12,62 +14,53 @@ cd richio
 pip install -e .
 ```
 
-The core install pulls in `numpy`, `h5py`, and `matplotlib` (plus `unyt` for the
-unit system). After installing, import the package:
+This pulls in everything the core library needs: `numpy`, `h5py`, `matplotlib`,
+and `unyt` (the unit system). Once it finishes, import the package:
 
 ```python
 import richio as rio
 ```
 
-By convention we alias it to `rio` throughout the docs.
+The documentation shortens `richio` to `rio` everywhere. You don't have to;
+`import richio` works just as well, but the examples all use `rio`.
 
 ## Optional extras
 
-Some capabilities depend on heavier third-party stacks and are kept optional so a
-plain `pip install` stays lean.
+Two features rely on larger third-party libraries. They are kept separate so a
+plain install stays small and quick to import, so add them only if you need them.
 
-=== "3-D volume rendering"
+3-D volume rendering ([`richio.render`](../guide/volume-rendering.md)) draws
+shaded images and movies of the gas. It needs `yt` and `imageio`:
 
-    Depth-cued volume renders and rotating-camera movies
-    ([`richio.render`](../guide/volume-rendering.md)) need `yt` and `imageio`:
-
-    ```bash
-    pip install "richio[render]"
-    ```
-
-=== "Multi-node movie rendering"
-
-    Frame-parallel movie rendering across **multiple nodes** additionally needs
-    `mpi4py` built against a system/cluster MPI:
-
-    ```bash
-    # On a cluster, load an MPI module first, e.g.:
-    module load OpenMPI
-    pip install "richio[mpi]"
-    # or:  conda install -c conda-forge mpi4py
-    ```
-
-    Single-node multi-core rendering (`volume_movie(..., n_jobs=N)`) needs nothing
-    beyond the `[render]` extra.
-
-=== "Shock finding"
-
-    The shock finder ([`richio.shockfinder`](../guide/shock-finding.md)) uses
-    `scipy` and `numba`. These are not declared as core dependencies yet, so
-    install them explicitly:
-
-    ```bash
-    pip install scipy numba
-    ```
-
-## Verifying the install
-
-```python
-import richio as rio
-print(rio.__name__)          # 'richio'
+```bash
+pip install "richio[render]"
 ```
 
-If you have a RICH snapshot handy, the fastest end-to-end check is:
+Shock finding ([`richio.shockfinder`](../guide/shock-finding.md)) locates shock
+fronts. It uses `scipy` and `numba`, which aren't installed automatically, so add
+them yourself:
+
+```bash
+pip install scipy numba
+```
+
+There is also an MPI extra for rendering a single movie across several cluster
+nodes at once. Most people never need it, since rendering on the many cores of
+one machine is already fast, so its setup lives in the
+[volume rendering guide](../guide/volume-rendering.md#rendering-faster).
+
+## Checking it worked
+
+The quickest test that doesn't need any data:
+
+```python
+>>> import richio as rio
+>>> rio.__name__
+'richio'
+```
+
+If you have a RICH snapshot on hand, open it and print a summary. This exercises
+the whole reading path:
 
 ```python
 snap = rio.load("snap_0042.h5")
