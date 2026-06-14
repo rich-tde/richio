@@ -152,7 +152,6 @@ def build_voronoi(
     :param snap: Loaded RICH snapshot providing ``X``, ``Y``, ``Z``
                  coordinates.  Optional - pass ``None`` and supply ``X``,
                  ``Y``, ``Z`` as array-likes directly.
-    :type snap: :class:`~richio.data.Snapshot` or None
     :param X: Field name resolved against ``snap``, or an array-like of
               x-coordinates when ``snap`` is ``None``.
     :param Y: Field name resolved against ``snap``, or an array-like of
@@ -236,7 +235,6 @@ def build_knn(
     are never indexed).
 
     :param snap: Loaded RICH snapshot, or ``None`` to pass coordinates directly.
-    :type snap: :class:`~richio.data.Snapshot` or None
     :param X: Field name resolved against ``snap``, or an array-like of
               x-coordinates when ``snap`` is ``None``.  (``Y``, ``Z`` likewise.)
     :param k: Number of nearest neighbours per cell.  Must exceed the local
@@ -792,10 +790,8 @@ def shock_candidates(snap: "Snapshot", gamma: float = 5 / 3) -> SimpleNamespace:
 
     :param snap: Loaded RICH snapshot providing ``divV``, ``P``, ``rho`` and the
                  pressure/density gradient fields.
-    :type snap: :class:`~richio.data.Snapshot`
     :param gamma: Adiabatic index.  Accepted for signature parity with the
                   ``find_shock_*`` functions; not used by conditions 1 & 2.
-    :type gamma: float
     :returns: Namespace with attributes:
 
               * ``candidates`` - ``int64 (M,)`` global indices passing 1 & 2.
@@ -842,11 +838,8 @@ def find_shock_zone(
 
     :param snap: Loaded RICH snapshot.  Must provide ``DrhoDx``, ``DrhoDy``,
                  ``DrhoDz`` for the temperature-gradient calculation.
-    :type snap: :class:`~richio.data.Snapshot`
     :param vor: Voronoi graph from :func:`build_voronoi`.
-    :type vor: :class:`types.SimpleNamespace`
     :param gamma: Adiabatic index.  Defaults to 5/3.
-    :type gamma: float
     :returns: Boolean array of shape ``(N,)``; ``True`` for shock-zone cells.
     :rtype: :class:`numpy.ndarray` (bool)
     """
@@ -901,14 +894,10 @@ def find_shock_surface(
 
     :param snap: Loaded RICH snapshot providing ``P``, ``rho``, ``divV``, and
                  gradient fields.
-    :type snap: :class:`~richio.data.Snapshot`
     :param vor: Voronoi graph from :func:`build_voronoi`.
-    :type vor: :class:`types.SimpleNamespace`
     :param shock_zone: Boolean shock-zone mask from :func:`find_shock_zone`,
                        shape ``(N,)``.
-    :type shock_zone: :class:`numpy.ndarray` (bool)
     :param gamma: Adiabatic index.  Defaults to 5/3.
-    :type gamma: float
     :returns: Namespace with attributes:
 
               * ``surface_mask`` - ``bool (N,)`` global mask for shock-surface cells.
@@ -993,13 +982,9 @@ def find_shock_zone_threaded(
     size and allows interleaving with other Python work between chunks.
 
     :param snap: Loaded RICH snapshot.
-    :type snap: :class:`~richio.data.Snapshot`
     :param vor: Voronoi graph from :func:`build_voronoi`.
-    :type vor: :class:`types.SimpleNamespace`
     :param gamma: Adiabatic index.  Defaults to 5/3.
-    :type gamma: float
     :param n_workers: Number of threads.  Defaults to ``os.cpu_count()``.
-    :type n_workers: int or None
     :returns: Boolean shock-zone mask, shape ``(N,)``.
     :rtype: :class:`numpy.ndarray` (bool)
     """
@@ -1062,15 +1047,10 @@ def find_shock_surface_threaded(
     threads share the same numpy arrays with zero copying.
 
     :param snap: Loaded RICH snapshot.
-    :type snap: :class:`~richio.data.Snapshot`
     :param vor: Voronoi graph from :func:`build_voronoi`.
-    :type vor: :class:`types.SimpleNamespace`
     :param shock_zone: Boolean shock-zone mask from :func:`find_shock_zone`.
-    :type shock_zone: :class:`numpy.ndarray` (bool)
     :param gamma: Adiabatic index.  Defaults to 5/3.
-    :type gamma: float
     :param n_workers: Number of threads.  Defaults to ``os.cpu_count()``.
-    :type n_workers: int or None
     :returns: Same namespace as :func:`find_shock_surface`.
     :rtype: :class:`types.SimpleNamespace`
     """

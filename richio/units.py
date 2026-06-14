@@ -117,7 +117,6 @@ class Units:
 
         :param key: Canonical field name (e.g. ``"Density"``) or alias
                     (e.g. ``"density"``).
-        :type key: str
         :param default: Value to return when *key* is not found in the
                         registry.  If omitted, a :exc:`ValueError` is raised
                         for unknown keys.

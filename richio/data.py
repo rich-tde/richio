@@ -67,7 +67,6 @@ def load(path):
     ``.txt`` files.
 
     :param path: Path to an HDF5 snapshot file or to a directory of NPY files.
-    :type path: str
     :returns: The loaded snapshot object.
     :rtype: :class:`SnapshotH5` or :class:`SnapshotNPY`
     :raises FileNotFoundError: If *path* is neither a valid file nor a directory.
@@ -96,7 +95,6 @@ class Snapshot:
     :func:`load` instead.
 
     :param path: Path to the snapshot file or directory.
-    :type path: str
 
     Attributes
     ----------
@@ -158,7 +156,6 @@ class Snapshot:
         alias can be used as an attribute.
 
         :param name: Field name or alias.
-        :type name: str
         :raises AttributeError: If *name* is not a known field or alias.
         """
         try:
@@ -170,7 +167,6 @@ class Snapshot:
         """Return the canonical field name for *key*, resolving any alias.
 
         :param key: Field name or alias.
-        :type key: str
         :returns: Canonical key from :data:`~richio.config.FIELD_REGISTRY`,
                   or *key* unchanged if not found.
         :rtype: str
@@ -233,10 +229,8 @@ class Snapshot:
         :param unit_system: Unit system used for displaying values: ``'rich'``
                             (code solar units, default), ``'cgs'``, or
                             ``'mks'``.
-        :type unit_system: str
         :param show_aliases: Whether to include an *Aliases* column in the
                              field table.  Defaults to ``True``.
-        :type show_aliases: bool
 
         Examples::
 
@@ -320,7 +314,6 @@ class Snapshot:
         :class:`numpy.ndarray` (treated as dimensionless with a warning).
 
         :param data: Field name, unit-bearing array, or dimensionless array.
-        :type data: str or ArrayLike
         :returns: Data array with units attached.
         :rtype: :class:`unyt.unyt_array`
         :raises TypeError: For unsupported input types.
@@ -362,30 +355,21 @@ class Snapshot:
 
         :param data: Field to project — field name string or array of shape
                      ``(N,)``.
-        :type data: str or ArrayLike
         :param res: Grid resolution — single integer for a cubic grid, or a
                     three-element sequence ``(nx, ny, nz)``.
-        :type res: int or ArrayLike
         :param X: x-coordinates of cell centres (field name or array).
                   Defaults to ``"X"``.
-        :type X: str or ArrayLike
         :param Y: y-coordinates of cell centres. Defaults to ``"Y"``.
-        :type Y: str or ArrayLike
         :param Z: z-coordinates of cell centres. Defaults to ``"Z"``.
-        :type Z: str or ArrayLike
         :param box_size: Domain bounds ``[x0, y0, z0, x1, y1, z1]``.  Reads
                          from the snapshot's ``box`` field when ``None``.
-        :type box_size: ArrayLike or None
         :param unit_system: Target unit system for the output (``'cgs'``,
                             ``'rich'``, etc.).  Defaults to ``'cgs'``.
-        :type unit_system: str
         :param selection: Boolean mask of shape ``(N,)`` to restrict which
                           cells are used.  Defaults to ``None`` (all cells).
-        :type selection: ArrayLike or None
         :param plane: Projection plane (e.g. ``"xy"``, ``"xz"``, ``"yz"``).
                       Determines which axis is integrated over.  ``None``
                       (default) integrates along Z.
-        :type plane: str or None
         :returns: Tuple ``(projected_data, xspace, yspace)`` where
                   *projected_data* has shape ``(nx-1, ny-1)`` and *xspace* /
                   *yspace* are 1-D coordinate arrays.
@@ -425,30 +409,22 @@ class Snapshot:
 
         :param res: Grid resolution — single integer for a cubic grid or a
                     three-element sequence ``(nx, ny, nz)``.
-        :type res: int or ArrayLike
         :param X: x-coordinates of cell centres. Defaults to ``"X"``.
-        :type X: str or ArrayLike
         :param Y: y-coordinates of cell centres. Defaults to ``"Y"``.
-        :type Y: str or ArrayLike
         :param Z: z-coordinates of cell centres. Defaults to ``"Z"``.
-        :type Z: str or ArrayLike
         :param box_size: Domain bounds ``[x0, y0, z0, x1, y1, z1]``.  Reads
                          from the snapshot's ``box`` field when ``None``.
-        :type box_size: ArrayLike or None
         :param selection: Boolean mask ``(N,)`` to restrict which cells are
                           used.  Defaults to ``None``.
-        :type selection: ArrayLike or None
         :param endpoint: If ``True`` the grid spacing is
                          ``(hi-lo)/(n-1)``; if ``False`` (default) it is
                          ``(hi-lo)/n`` so the grid never reaches the upper
                          boundary.
-        :type endpoint: bool
         :param plane: Projection plane, e.g. ``"xy"``, ``"xz"``, ``"yz"``.
                       Permutes the coordinate axes so that the third axis (the
                       integration axis for :meth:`project`) matches the normal
                       of the requested plane.  ``None`` (default) leaves the
                       axis order unchanged (integrates along Z).
-        :type plane: str or None
         :returns: Tuple ``(i, xspace, yspace, zspace)`` where *i* has shape
                   ``(nx, ny, nz)`` and contains **absolute** indices into the
                   original particle array, so ``snap.density[i]`` gives the
@@ -536,29 +512,20 @@ class Snapshot:
         looked up with a single ``field[i]`` without repeating the interpolation.
 
         :param res: Grid resolution — single integer (square) or ``(nx, ny)``.
-        :type res: int or ArrayLike
         :param X: x-coordinates of cell centres. Defaults to ``"X"``.
-        :type X: str or ArrayLike
         :param Y: y-coordinates of cell centres. Defaults to ``"Y"``.
-        :type Y: str or ArrayLike
         :param Z: z-coordinates of cell centres. Defaults to ``"Z"``.
-        :type Z: str or ArrayLike
         :param plane: Slice plane, e.g. ``"xy"`` (default), ``"yz"``, ``"zx"``.
-        :type plane: str
         :param slice_coord: Normal-axis coordinate at which to slice.
                             Defaults to ``0``.
-        :type slice_coord: float or :class:`unyt.unyt_quantity`
         :param box_size: Domain bounds ``[x0, y0, z0, x1, y1, z1]`` (6-element)
                          or ``[x0, y0, x1, y1]`` (4-element, plane only).
                          Auto-detected when ``None``.
-        :type box_size: ArrayLike or None
         :param selection: Boolean mask ``(N,)`` to restrict which cells are
                           used.  Defaults to ``None`` (all cells).
-        :type selection: ArrayLike or None
         :param volume_selection: Pre-filter to cells within one cell-size of
                                  the plane to speed up the k-d tree query.
                                  Defaults to ``True``.
-        :type volume_selection: bool
         :returns: Tuple ``(i, xspace, yspace)`` where *i* has shape ``(nx, ny)``
                   and contains **absolute** indices into the original particle
                   array (before any masking), so ``snap.density[i]`` gives the
@@ -665,29 +632,18 @@ class Snapshot:
         :meth:`to_2dgrid` directly and index each field with the returned *i*.
 
         :param data: Field to slice — name string or array of shape ``(N,)``.
-        :type data: str or ArrayLike
         :param res: Grid resolution — integer (square) or ``(nx, ny)`` tuple.
-        :type res: int or ArrayLike
         :param X: x-coordinates. Defaults to ``"X"``.
-        :type X: str or ArrayLike
         :param Y: y-coordinates. Defaults to ``"Y"``.
-        :type Y: str or ArrayLike
         :param Z: z-coordinates. Defaults to ``"Z"``.
-        :type Z: str or ArrayLike
         :param plane: Slice plane. Defaults to ``"xy"``.
-        :type plane: str
         :param slice_coord: Normal-axis coordinate at which to slice.
                             Defaults to ``0``.
-        :type slice_coord: float or :class:`unyt.unyt_quantity`
         :param box_size: Domain bounds. Auto-detected when ``None``.
-        :type box_size: ArrayLike or None
         :param selection: Boolean cell mask. Defaults to ``None`` (all cells).
-        :type selection: ArrayLike or None
         :param unit_system: Output unit system. Defaults to ``'cgs'``.
-        :type unit_system: str
         :param volume_selection: Pre-filter cells near the slice plane.
                                  Defaults to ``True``.
-        :type volume_selection: bool
         :returns: Tuple ``(sliced_data, xspace, yspace)``.
         :rtype: tuple
         """
@@ -737,20 +693,13 @@ class Snapshot:
         in code length units (``units.lscale``).
 
         :param box: Explicit bounds ``[x0, y0, z0, x1, y1, z1]``.
-        :type box: ArrayLike or None
         :param center: Box centre ``[cx, cy, cz]`` (used with ``width``).
-        :type center: ArrayLike or None
         :param width: Box side length — scalar or ``[wx, wy, wz]`` (used with
                       ``center``).
-        :type width: float or :class:`unyt.unyt_quantity` or ArrayLike or None
         :param mask: Boolean mask ``(N,)`` or integer index array.
-        :type mask: ArrayLike or None
         :param X: x-coordinate field name or array. Defaults to ``"X"``.
-        :type X: str or ArrayLike
         :param Y: y-coordinate field name or array. Defaults to ``"Y"``.
-        :type Y: str or ArrayLike
         :param Z: z-coordinate field name or array. Defaults to ``"Z"``.
-        :type Z: str or ArrayLike
         :returns: A lazy regional view of this snapshot.
         :rtype: :class:`ClippedSnapshot`
         :raises ValueError: If no region is specified, or if ``center`` is given
@@ -828,7 +777,6 @@ class SnapshotH5(Snapshot):
     are also supported — fields are read from the root.
 
     :param path: Path to the ``.h5`` or ``.hdf5`` snapshot file.
-    :type path: str
 
     Attributes
     ----------
@@ -885,7 +833,6 @@ class SnapshotH5(Snapshot):
             snap['density', ::-1]    # reversed
 
         :param key: Field name (or alias), or a tuple ``(field, slice)``.
-        :type key: str or tuple
         :returns: Field data with physical units attached.
         :rtype: :class:`unyt.unyt_array`
         :raises KeyError: If the field is not found in the HDF5 file.
@@ -979,7 +926,6 @@ class SnapshotNPY(Snapshot):
     pattern and used to locate the correct files.
 
     :param path: Path to the directory containing ``.npy`` / ``.txt`` files.
-    :type path: str
     """
 
     _field_aliases = _build_npy_aliases()
@@ -1029,7 +975,6 @@ class SnapshotNPY(Snapshot):
             snap['density', 1:10]    # rows 1–9
 
         :param key: Field name (or alias), or a tuple ``(field, slice)``.
-        :type key: str or tuple
         :returns: Field data with physical units attached.
         :rtype: :class:`unyt.unyt_array`
         :raises FileNotFoundError: If neither ``.npy`` nor ``.txt`` file is
@@ -1095,12 +1040,9 @@ class ClippedSnapshot(Snapshot):
     absolute index space — ranks need no special handling here.
 
     :param parent: The snapshot being clipped.
-    :type parent: :class:`Snapshot`
     :param mask: Boolean array of shape ``(len(parent),)`` selecting cells.
-    :type mask: :class:`numpy.ndarray`
     :param box: Six-element ``[x0, y0, z0, x1, y1, z1]`` clip bounds returned by
                 this clip's ``box`` field.
-    :type box: :class:`unyt.unyt_array`
 
     Attributes
     ----------
@@ -1132,7 +1074,6 @@ class ClippedSnapshot(Snapshot):
         unchanged.
 
         :param key: Field name (or alias), or a tuple ``(field, slice)``.
-        :type key: str or tuple
         :returns: Masked field data with physical units attached.
         :rtype: :class:`unyt.unyt_array`
         """
@@ -1170,7 +1111,6 @@ def _parse_plane(plane, x, y, z):
 
     :param plane: Two-character string specifying the slice plane, e.g.
                   ``"xy"``, ``"yz"``, ``"zx"``, ``"yx"``, etc.
-    :type plane: str
     :param x: x-data (scalar, array, or unyt_array).
     :param y: y-data.
     :param z: z-data.
@@ -1212,19 +1152,14 @@ def _kdtree_interpolate(coords, grid_coords, k=1, eps=0, workers=1):
     point for each query.
 
     :param coords: Source point coordinates, shape ``(N, 3)``.
-    :type coords: array-like
     :param grid_coords: Query point coordinates, shape ``(nx, ny[, nz], 3)``
                         or ``(M, 3)``.
-    :type grid_coords: array-like
     :param k: Number of nearest neighbours to find.  Defaults to ``1``.
-    :type k: int
     :param eps: Approximate search tolerance passed to
                 :meth:`scipy.spatial.KDTree.query`.  Defaults to ``0``
                 (exact).
-    :type eps: float
     :param workers: Number of parallel workers for the query.  Defaults to
                     ``1``.
-    :type workers: int
     :returns: Index array of nearest-source indices, same leading shape as
               *grid_coords* (minus the last coordinate dimension).
     :rtype: :class:`numpy.ndarray`
