@@ -1,34 +1,10 @@
-/* RICHIO docs — tidy up the auto-generated API reference.
+/* RICHIO docs — small tweaks on top of the Material theme.
  *
- * mkdocstrings renders each function/class as a `.doc-object` block that ends in
- * a "Source code" dropdown, a parameter table, or a paragraph, each with its own
- * trailing margin. The readthedocs theme gives these blocks no styling, so the
- * space before the next member depends on whatever came last and the gaps look
- * uneven. Give every member the same top spacing and a light divider so the
- * rhythm is consistent regardless of content. */
+ * Material already styles the mkdocstrings API reference with consistent
+ * spacing, so the heavy spacing fixes the readthedocs theme needed are gone.
+ * Keep only a light touch here. */
 
-.doc-children > .doc-object {
-  margin-top: 2rem;
-  padding-top: 1.25rem;
-  border-top: 1px solid rgba(0, 0, 0, 0.08);
-}
-
-.doc-children > .doc-object:first-child {
-  margin-top: 0.5rem;
-  padding-top: 0;
-  border-top: none;
-}
-
-/* Even, predictable spacing below each member's body. */
-.doc-contents {
-  margin-bottom: 0.5rem;
-}
-
-/* The "Source code" dropdown: consistent margin and a calmer look. */
-details.mkdocstrings-source {
-  margin: 1rem 0 0;
-}
-
+/* Make the "Source code" dropdown summary clearly clickable. */
 details.mkdocstrings-source > summary {
   cursor: pointer;
 }

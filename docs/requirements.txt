@@ -1,8 +1,8 @@
 # Documentation toolchain for the RICHIO site.
 # Install with:  pip install -r docs/requirements.txt
 #
-# The plain `readthedocs` MkDocs theme ships with mkdocs itself, so no theme
-# package is needed.  `mkdocstrings[python]` pulls in the Python handler
-# (griffe) used to auto-generate the API reference pages.
-mkdocs
+# `mkdocs-material` is the site theme (and pulls in mkdocs itself).
+# `mkdocstrings[python]` pulls in the Python handler (griffe) used to
+# auto-generate the API reference pages.
+mkdocs-material
 mkdocstrings[python]
