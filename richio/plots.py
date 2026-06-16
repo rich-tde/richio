@@ -188,6 +188,7 @@ class SnapshotPlotter:
         label_latex: str = "",  # TODO: make them automatic from data name
         unit_latex: str | None = None,
         aspect_equal: bool = True,
+        log_scale: bool = True,
         **kwargs,
     ):
         """Compute a column-integrated projection and render it as a plot.
@@ -215,6 +216,7 @@ class SnapshotPlotter:
         :param unit_latex: LaTeX unit string for colorbar.  Auto-read when
                            ``None``.
         :param aspect_equal: Set equal aspect ratio. Defaults to ``True``.
+        :param log_scale: Set logarithmic scale. Defaults to ``True''.
         :param kwargs: Extra keyword arguments forwarded to
                        :func:`~matplotlib.pyplot.pcolormesh`.
         :returns: Tuple ``(ax, im, projected_data)``.
@@ -241,6 +243,7 @@ class SnapshotPlotter:
             label_latex=label_latex,
             unit_latex=unit_latex,
             aspect_equal=aspect_equal,
+            log_scale=log_scale,
             **kwargs,
         )
 
@@ -335,13 +338,14 @@ def scalar_map(
     # copy kwargs so we can set defaults without mutating caller's dict
     kw = kwargs.copy()
 
+    finite = f[np.isfinite(f)]
     if "vmin" not in kw:
-        dmin = float(np.nanmin(f))
+        dmin = float(np.min(finite))
         # round to nearest half-integers outward
         vmin_default = np.floor(dmin * 2.0) / 2.0
         kw["vmin"] = vmin_default
     if "vmax" not in kw:
-        dmax = float(np.nanmax(f))
+        dmax = float(np.max(finite))
         vmax_default = np.ceil(dmax * 2.0) / 2.0
         kw["vmax"] = vmax_default
 
