@@ -109,12 +109,20 @@ def to_uniform_grid(
                     (~30 s at 70 M cells) and HDF5 I/O dominate regardless.
     :returns: A populated :class:`UniformGrid`.
     """
+    # `fields` may be a name, a list of names, or a {name: (N,) array} mapping of
+    # precomputed (e.g. derived) per-cell data.  Normalise to a name->source map
+    # where the source is either ``None`` (read from the snapshot) or an array.
     if isinstance(fields, str):
-        fields = [fields]
+        sources = {fields: None}
+    elif isinstance(fields, dict):
+        sources = dict(fields)
+    else:
+        sources = {f: None for f in fields}
+    first_field = next(iter(sources))
 
     # Resolve an automatic tight bounding box around the dense region.
     if isinstance(box_size, str) and box_size == "auto":
-        box_size = tight_box(snap, fields[0], coords=(X, Y, Z))
+        box_size = tight_box(snap, first_field, coords=(X, Y, Z))
 
     # One k-d tree build, shared by every field. `i` holds absolute indices
     # into the original (unmasked) particle array, shape (nx, ny, nz).
@@ -125,8 +133,9 @@ def to_uniform_grid(
 
     field_arrays: dict[str, np.ndarray] = {}
     field_units: dict[str, str] = {}
-    for f in fields:
-        cube = snap._get_data(f)[i].in_base(unit_system)
+    for f, src in sources.items():
+        data = snap._get_data(f) if src is None else snap._get_data(src)
+        cube = data[i].in_base(unit_system)
         field_arrays[f] = np.ascontiguousarray(np.asarray(cube), dtype="float64")
         field_units[f] = str(cube.units)
 
@@ -209,3 +218,28 @@ def tight_box(snap, field="density", pct=98.0, pad=1.1, square=True, coords=("X"
     import unyt as u
 
     return u.unyt_array(box, out_unit)
+
+
+def densest_box(snap, field="density", radius=250.0, coords=("X", "Y", "Z")):
+    """Cubic box of half-width *radius* centred on the single densest cell.
+
+    Handy for a disk/black-hole close-up: the densest cell sits in the forming
+    disk, so this frames the central region regardless of where the debris is.
+
+    :param snap: A loaded :class:`richio.data.Snapshot`.
+    :param field: Field whose maximum defines the centre. Defaults ``"density"``.
+    :param radius: Half-width of the cube in the coordinate units (code length).
+    :param coords: Names of the coordinate fields.
+    :returns: ``unyt`` array ``[x0, y0, z0, x1, y1, z1]`` in code length units.
+    """
+    import unyt as u
+
+    f = np.asarray(snap._get_data(field))
+    ic = int(np.nanargmax(f))
+    cx = snap._get_data(coords[0])
+    centre = np.array([
+        float(np.asarray(cx)[ic]),
+        float(np.asarray(snap._get_data(coords[1]))[ic]),
+        float(np.asarray(snap._get_data(coords[2]))[ic]),
+    ])
+    return u.unyt_array(np.concatenate([centre - radius, centre + radius]), cx.units)

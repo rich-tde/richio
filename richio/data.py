@@ -448,12 +448,13 @@ class Snapshot:
         else:
             x0, y0, z0, x1, y1, z1 = box_size
 
-            # Assign default unit if not provided
-            for l in [x0, y0, z0, x1, y1, z1]:
-                if isinstance(l, u.unyt_quantity):
-                    continue
-                else:
-                    l = l * units.lscale
+            # Assign the default (code length ~ R_sun) unit to any bare number,
+            # so an explicit numeric box works like a unit-bearing one and the
+            # returned coordinate spaces carry units.
+            def _as_len(v):
+                return v if isinstance(v, u.unyt_quantity) else v * units.lscale
+
+            x0, y0, z0, x1, y1, z1 = (_as_len(v) for v in (x0, y0, z0, x1, y1, z1))
 
         # Permute axes so that Z is the integration axis for the requested plane
         if plane is not None:
@@ -475,14 +476,34 @@ class Snapshot:
         yspace = np.linspace(y0, y1, ny, endpoint=endpoint)
         zspace = np.linspace(z0, z1, nz, endpoint=endpoint)
 
-        grid_x, grid_y, grid_z = np.meshgrid(xspace, yspace, zspace, indexing="ij")
+        # Nearest-neighbour resample.  Build the k-d tree once and query the grid
+        # in x-slabs, filling the (nx, ny, nz) index cube, instead of
+        # materialising the whole (nx, ny, nz, 3) query array — that array alone
+        # is ~50 GB at res 1024 and would blow the node memory.  Peak transient is
+        # one slab of query points; the result is identical to a single query.
+        from scipy.spatial import KDTree
 
         coords = np.stack([X, Y, Z], axis=-1)  # coordinates of the particles
-        grid_coords = np.stack(
-            [grid_x, grid_y, grid_z], axis=-1
-        )  # coordinates of the grid (query points)
+        tree = KDTree(np.asarray(coords))
 
-        i_local = _kdtree_interpolate(coords=coords, grid_coords=grid_coords, workers=workers)
+        xs = np.asarray(xspace, dtype="float64")
+        yy, zz = np.meshgrid(np.asarray(yspace, dtype="float64"),
+                             np.asarray(zspace, dtype="float64"), indexing="ij")
+        yz = np.column_stack([yy.ravel(), zz.ravel()])  # (ny*nz, 2)
+        del yy, zz
+
+        plane_pts = ny * nz
+        slab = max(1, int(8_000_000 // max(plane_pts, 1)))  # ~8M query points/chunk
+        block = np.empty((slab * plane_pts, 3), dtype="float64")
+        i_local = np.empty((nx, ny, nz), dtype=np.intp)
+        for a in range(0, nx, slab):
+            m = min(slab, nx - a)
+            b = block[: m * plane_pts]
+            b[:, 0] = np.repeat(xs[a:a + m], plane_pts)
+            b[:, 1] = np.tile(yz[:, 0], m)
+            b[:, 2] = np.tile(yz[:, 1], m)
+            _, idx = tree.query(b, k=1, eps=0, p=2, workers=workers)
+            i_local[a:a + m] = idx.reshape(m, ny, nz)
 
         # Map local indices back to absolute indices in the original particle array
         if selection is not None:

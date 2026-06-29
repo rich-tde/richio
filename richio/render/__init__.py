@@ -44,7 +44,7 @@ Typical usage::
     rr.volume_movie(snap, "density", res=256, n_frames=180, filename="spin.mp4")
 """
 
-from richio.render.grid import UniformGrid, tight_box, to_uniform_grid
+from richio.render.grid import UniformGrid, densest_box, tight_box, to_uniform_grid
 
 # yt-backed functions are imported lazily so that `import richio.render` works
 # (e.g. just to build a UniformGrid) even when yt is not installed.
@@ -52,9 +52,11 @@ __all__ = [
     "UniformGrid",
     "to_uniform_grid",
     "tight_box",
+    "densest_box",
     "to_yt",
     "volume_image",
     "volume_movie",
+    "evolution_movie",
 ]
 
 
@@ -63,4 +65,8 @@ def __getattr__(name):
         from richio.render import yt_backend
 
         return getattr(yt_backend, name)
+    if name == "evolution_movie":
+        from richio.render import evolution
+
+        return evolution.evolution_movie
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

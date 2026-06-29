@@ -40,6 +40,11 @@ import numpy as np
 
 from richio.render.grid import UniformGrid, to_uniform_grid
 
+# Multiplier for all on-frame text (scale bar, colorbar, time label, axis triad).
+# Default 1.0 keeps existing sizes; bump via RICHIO_FONT_SCALE for projector-readable
+# text in conference renders (the per-element sizes are otherwise hardcoded below).
+_FONT_SCALE = float(os.environ.get("RICHIO_FONT_SCALE", "1.0"))
+
 
 def _require_yt():
     try:
@@ -71,6 +76,44 @@ def _auto_bounds(values, log=True, pmin=8.0, pmax=99.9):
     if hi <= lo:
         hi = lo * 10 if log else lo + 1.0
     return float(lo), float(hi)
+
+
+def _nice_ceil(x):
+    """Smallest 1/2/5 × 10^k that is ≥ ``x`` — a clean axis limit."""
+    if x <= 0:
+        return 1.0
+    k = np.floor(np.log10(x))
+    for m in (1.0, 2.0, 5.0, 10.0):
+        cand = m * 10.0 ** k
+        if cand >= x:
+            return float(cand)
+    return float(10.0 ** (k + 1))
+
+
+def _sym_bounds(values, pct=99.5, round_nice=False):
+    """Symmetric bound ``V`` for a signed field, so the scale spans ``[-V, V]``.
+
+    With ``round_nice`` the bound is rounded up to a clean 1/2/5×10^k value, so
+    the symlog colorbar lands on tidy decade/half-decade ticks.
+    """
+    v = np.abs(np.asarray(values).ravel())
+    v = v[np.isfinite(v)]
+    if v.size == 0:
+        return 1.0
+    bound = float(np.percentile(v, pct)) or 1.0
+    return _nice_ceil(bound) if round_nice else bound
+
+
+def _mpl_norm(norm, vmin, vmax, linthresh=1.0):
+    """Build the matplotlib color norm for ``"log"`` / ``"linear"`` / ``"symlog"``."""
+    from matplotlib.colors import LogNorm, Normalize, SymLogNorm
+
+    if norm == "symlog":
+        v = max(abs(vmin), abs(vmax))
+        return SymLogNorm(linthresh=linthresh, vmin=-v, vmax=v, base=10)
+    if norm == "linear":
+        return Normalize(vmin=vmin, vmax=vmax)
+    return LogNorm(vmin=vmin, vmax=vmax)
 
 
 def _make_alpha_ramp(gamma):
@@ -133,6 +176,58 @@ def _camera_offset(radius, azimuth_deg, elevation_deg):
     return radius * np.array(
         [np.sin(a) * np.cos(e), -np.cos(a) * np.cos(e), np.sin(e)], dtype="float64"
     )
+
+
+def _camera_basis(azimuth_deg, elevation_deg, rot_axis, angle_deg):
+    """Orthonormal screen basis ``(forward, up, right)`` for the orientation gizmo.
+
+    Pure directions (no domain size needed), matching the same orbit math as
+    :func:`_camera_vectors`: ``forward`` is the line of sight (into the screen),
+    ``up`` the screen-vertical, ``right`` the screen-horizontal.  A world axis
+    ``e`` projects to image coordinates ``(e·right, e·up)``.
+    """
+    off0 = _camera_offset(1.0, azimuth_deg, elevation_deg)
+    north0 = np.array([0.0, 0.0, 1.0])
+    ang = np.deg2rad(angle_deg)
+    off = _rodrigues(off0, rot_axis, ang)
+    north = _rodrigues(north0, rot_axis, ang)
+
+    forward = -off / np.linalg.norm(off)
+    up = north - np.dot(north, forward) * forward
+    if np.linalg.norm(up) < 1e-6:  # looking down the pole — pick any up ⟂ forward
+        alt = np.array([0.0, 1.0, 0.0]) if abs(forward[1]) < 0.9 else np.array([1.0, 0.0, 0.0])
+        up = alt - np.dot(alt, forward) * forward
+    up = up / np.linalg.norm(up)
+    right = np.cross(up, forward)
+    right = right / np.linalg.norm(right)
+    return forward, up, right
+
+
+def _draw_triad(fig, basis, *, rect=(0.015, 0.015, 0.15, 0.15), flip_x=False):
+    """Draw a small 3-D orientation gizmo (x/y/z arrows) in figure-corner *rect*."""
+    forward, up, right = basis
+    sx_sign = -1.0 if flip_x else 1.0  # match a horizontally-reversed image
+    ax = fig.add_axes(rect)
+    ax.set_xlim(-1.35, 1.35)
+    ax.set_ylim(-1.35, 1.35)
+    ax.set_aspect("equal")
+    ax.axis("off")
+    axes = [
+        (np.array([1.0, 0.0, 0.0]), "#ff5555", "x"),
+        (np.array([0.0, 1.0, 0.0]), "#55ff55", "y"),
+        (np.array([0.0, 0.0, 1.0]), "#5599ff", "z"),
+    ]
+    # Draw axes pointing away from the viewer first so nearer ones sit on top.
+    for e, color, name in sorted(axes, key=lambda t: -float(np.dot(t[0], forward))):
+        sx, sy = sx_sign * float(np.dot(e, right)), float(np.dot(e, up))
+        depth = float(np.dot(e, forward))  # >0 ⇒ into the screen (away)
+        alpha = 0.45 if depth > 0.05 else 1.0
+        ax.annotate(
+            "", xy=(sx, sy), xytext=(0, 0),
+            arrowprops=dict(arrowstyle="-|>", color=color, lw=2.0, alpha=alpha),
+        )
+        ax.text(sx * 1.28, sy * 1.28, name, color=color, alpha=alpha,
+                fontsize=11 * _FONT_SCALE, ha="center", va="center", weight="bold")
 
 
 def _make_scene(
@@ -247,26 +342,84 @@ def _place_camera(cam, ds, length_unit, azimuth_deg, elevation_deg, rot_axis, an
     cam.set_width(ds.quan(width, length_unit))
 
 
-def _compose_with_colorbar(filename, img_or_data, *, is_rgb, cmap, log, vmin, vmax, label):
-    """Save *img_or_data* with a dark-themed matplotlib log colorbar beside it.
+def _scalar_display(ax, arr, cmap, norm, norm_name, flip_x):
+    """Colour-map a 2-D scalar projection, rendering empty cells as background.
+
+    ``LogNorm`` already treats ``<= 0`` as "bad" (so masked/empty cells fall to
+    the black background).  For ``symlog`` zero maps to the *centre* of the
+    colormap instead, which for a diverging map is white — indistinguishable
+    from genuinely zero-energy gas and swallowing white overlays.  So for symlog
+    we blank exact zeros (masked-out selection cells, or empty columns of a
+    weighted projection) to ``NaN`` and paint them the background colour, keeping
+    empty regions consistently black across all norms.  Returns the colormap used.
+    """
+    import matplotlib as mpl
+
+    cmap_obj = (mpl.colormaps[cmap] if isinstance(cmap, str) else cmap).copy()
+    cmap_obj.set_bad("black")
+    data = np.asarray(arr, dtype="float64")
+    if norm_name == "symlog":
+        data = np.where(data == 0.0, np.nan, data)
+    ax.set_facecolor("black")
+    ax.imshow(data.T, origin="lower", cmap=cmap_obj, norm=norm)
+    if flip_x:
+        ax.invert_xaxis()
+    return cmap_obj
+
+
+def _annotate_ax(ax, annotate):
+    """Draw a corner text label (e.g. a snapshot time) on *ax*."""
+    if annotate:
+        ax.text(0.02, 0.965, annotate, transform=ax.transAxes, color="w",
+                fontsize=14 * _FONT_SCALE, va="top", ha="left")
+
+
+def _draw_scalebar(ax, frac, label, *, color="w"):
+    """Draw a map-style horizontal scale bar at the bottom-centre of *ax*.
+
+    *frac* is the bar length as a fraction of the image width and *label* the
+    text drawn above it (e.g. ``"10 r_t"``).  Uses axes-fraction coordinates, so
+    it sits in the same screen place regardless of an x-axis flip (a scale bar is
+    symmetric anyway).  The caller sizes *frac* to a physical length using the
+    rendered field of view (camera width).
+    """
+    if not frac:
+        return
+    frac = float(np.clip(frac, 0.02, 0.9))
+    y = 0.05
+    x0, x1 = 0.5 - frac / 2.0, 0.5 + frac / 2.0
+    ax.plot([x0, x1], [y, y], transform=ax.transAxes, color=color, lw=2.5 * _FONT_SCALE,
+            solid_capstyle="butt", clip_on=False)
+    for xt in (x0, x1):  # end caps
+        ax.plot([xt, xt], [y - 0.012, y + 0.012], transform=ax.transAxes,
+                color=color, lw=2.5 * _FONT_SCALE, clip_on=False)
+    if label:
+        ax.text(0.5, y + 0.022, label, transform=ax.transAxes, color=color,
+                fontsize=12 * _FONT_SCALE, ha="center", va="bottom")
+
+
+def _compose_with_colorbar(filename, img_or_data, *, is_rgb, cmap, norm, vmin, vmax,
+                           label, linthresh=1.0, annotate=None, triad=None, flip_x=False,
+                           scalebar_frac=None, scalebar_label=None):
+    """Save *img_or_data* with a dark-themed matplotlib colorbar beside it.
 
     ``is_rgb=True``  → *img_or_data* is an already-rendered RGB(A) image (volume
     render); we just display it and draw the colorbar from ``cmap``/``vmin``/
     ``vmax``.  ``is_rgb=False`` → it is a 2-D scalar field (a projection) which we
-    colour-map directly with the same ``LogNorm``.
+    colour-map directly with the same norm (``"log"``/``"linear"``/``"symlog"``).
 
     We build the bar ourselves rather than using yt's ``save_annotated`` because
     that labels ticks with *linear* field values (all ~0 for these tiny
-    densities); a :class:`~matplotlib.colors.LogNorm` gives a correct log axis.
+    densities); the matplotlib norm gives a correct (log/symlog) axis.
     """
     import matplotlib
 
     matplotlib.use("Agg")
     from matplotlib.cm import ScalarMappable
-    from matplotlib.colors import LogNorm, Normalize
     import matplotlib.pyplot as plt
 
-    norm = LogNorm(vmin=vmin, vmax=vmax) if log else Normalize(vmin=vmin, vmax=vmax)
+    norm_name = norm
+    norm = _mpl_norm(norm, vmin, vmax, linthresh)
 
     if is_rgb:
         h, w = img_or_data.shape[0], img_or_data.shape[1]
@@ -278,22 +431,46 @@ def _compose_with_colorbar(filename, img_or_data, *, is_rgb, cmap, log, vmin, vm
     ax = fig.add_axes([0.0, 0.0, 0.84, 1.0])
     if is_rgb:
         ax.imshow(img_or_data)
+        if flip_x:
+            ax.invert_xaxis()
+        cmap_cb = cmap
     else:
-        ax.imshow(img_or_data.T, origin="lower", cmap=cmap, norm=norm)
+        cmap_cb = _scalar_display(ax, img_or_data, cmap, norm, norm_name, flip_x)
     ax.axis("off")
+    _annotate_ax(ax, annotate)
+    _draw_scalebar(ax, scalebar_frac, scalebar_label)
 
     cax = fig.add_axes([0.865, 0.12, 0.022, 0.76])
-    cb = fig.colorbar(ScalarMappable(norm=norm, cmap=cmap), cax=cax)
-    cb.set_label(label, color="w")
-    cb.ax.yaxis.set_tick_params(color="w", labelcolor="w")
+    cb = fig.colorbar(ScalarMappable(norm=norm, cmap=cmap_cb), cax=cax)
+    cb.set_label(label, color="w", fontsize=12 * _FONT_SCALE)
+    if norm_name == "symlog":
+        # Default symlog ticks are too sparse (often only ±10^0, 0).  Add 1/2/5
+        # majors + decade minors so the (a)symmetric log scaling is legible.
+        from matplotlib.ticker import FuncFormatter, SymmetricalLogLocator
+
+        cb.ax.yaxis.set_major_locator(
+            SymmetricalLogLocator(base=10, linthresh=linthresh, subs=(1.0, 2.0, 5.0)))
+        cb.ax.yaxis.set_minor_locator(
+            SymmetricalLogLocator(base=10, linthresh=linthresh, subs=tuple(range(1, 10))))
+        cb.ax.yaxis.set_major_formatter(
+            FuncFormatter(lambda v, _p: ("0" if v == 0 else f"{v:g}")))
+        cb.update_ticks()
+    cb.ax.yaxis.set_tick_params(color="w", labelcolor="w", which="both",
+                                labelsize=10 * _FONT_SCALE)
+    cb.ax.yaxis.set_tick_params(which="minor", length=2)
     cb.outline.set_edgecolor("w")
+    if triad is not None:
+        _draw_triad(fig, triad, flip_x=flip_x)
     fig.savefig(filename, facecolor="black", dpi=100)
     plt.close(fig)
 
 
-def _save_scene(sc, filename, *, sigma_clip, colorbar, field, log, grid, vmin, vmax, cmap):
+def _save_scene(sc, filename, *, sigma_clip, colorbar, field, norm, grid, vmin, vmax, cmap,
+                linthresh=1.0, annotate=None, triad=None, flip_x=False,
+                scalebar_frac=None, scalebar_label=None):
     """Save volume-render scene *sc* to *filename* (optionally with a colorbar)."""
-    if not colorbar:
+    if (not colorbar and not annotate and triad is None and not flip_x
+            and not scalebar_frac):
         sc.save(filename, sigma_clip=sigma_clip)
         return
 
@@ -310,7 +487,9 @@ def _save_scene(sc, filename, *, sigma_clip, colorbar, field, log, grid, vmin, v
     unit = grid.units.get(field, "")
     label = f"{field}" + (f"  [{unit}]" if unit else "")
     _compose_with_colorbar(
-        filename, img, is_rgb=True, cmap=cmap, log=log, vmin=vmin, vmax=vmax, label=label
+        filename, img, is_rgb=True, cmap=cmap, norm=norm, vmin=vmin, vmax=vmax,
+        label=label, linthresh=linthresh, annotate=annotate, triad=triad, flip_x=flip_x,
+        scalebar_frac=scalebar_frac, scalebar_label=scalebar_label,
     )
 
 
@@ -353,33 +532,45 @@ def _make_projection(
     return arr, unit
 
 
-def _save_projection(arr, filename, *, colorbar, cmap, log, vmin, vmax, label):
+def _save_projection(arr, filename, *, colorbar, cmap, norm, vmin, vmax, label,
+                     linthresh=1.0, annotate=None, triad=None, flip_x=False,
+                     scalebar_frac=None, scalebar_label=None):
     """Colour-map a 2-D projection *arr* and save it (optionally with a colorbar)."""
     if colorbar:
         _compose_with_colorbar(
-            filename, arr, is_rgb=False, cmap=cmap, log=log, vmin=vmin, vmax=vmax, label=label
+            filename, arr, is_rgb=False, cmap=cmap, norm=norm, vmin=vmin, vmax=vmax,
+            label=label, linthresh=linthresh, annotate=annotate, triad=triad, flip_x=flip_x,
+            scalebar_frac=scalebar_frac, scalebar_label=scalebar_label,
         )
         return
 
     import matplotlib
 
     matplotlib.use("Agg")
-    from matplotlib.colors import LogNorm, Normalize
     import matplotlib.pyplot as plt
 
-    norm = LogNorm(vmin=vmin, vmax=vmax) if log else Normalize(vmin=vmin, vmax=vmax)
+    norm_name = norm
+    norm = _mpl_norm(norm, vmin, vmax, linthresh)
     h, w = arr.shape
     fig = plt.figure(figsize=(w / 100.0, h / 100.0), dpi=100)
     fig.patch.set_facecolor("black")
     ax = fig.add_axes([0.0, 0.0, 1.0, 1.0])
-    ax.imshow(arr.T, origin="lower", cmap=cmap, norm=norm)
+    _scalar_display(ax, arr, cmap, norm, norm_name, flip_x)
     ax.axis("off")
+    _annotate_ax(ax, annotate)
+    _draw_scalebar(ax, scalebar_frac, scalebar_label)
+    if triad is not None:
+        _draw_triad(fig, triad, flip_x=flip_x)
     fig.savefig(filename, facecolor="black", dpi=100)
     plt.close(fig)
 
 
-def _projection_label(field, unit):
-    return f"column {field}" + (f"  [{unit}]" if unit else "")
+def _projection_label(field, unit, weighted=False):
+    if field == "bernoulli":
+        return r"$B / \Delta\epsilon$"
+    # Plain integral => column quantity; weighted => line-of-sight mean.
+    prefix = "" if weighted else "column "
+    return f"{prefix}{field}" + (f"  [{unit}]" if unit else "")
 
 
 def volume_image(
@@ -401,6 +592,8 @@ def volume_image(
     gamma: float = 2.5,
     n_layers: int = 5,
     cmap: str = "magma",
+    norm: str = "log",
+    linthresh: float = 1.0,
     grey_opacity: bool = True,
     colorbar: bool = True,
     sigma_clip: float | None = 4.0,
@@ -409,6 +602,11 @@ def volume_image(
     elevation: float = 20.0,
     zoom: float = 1.4,
     rot_axis=(0.0, 0.0, 1.0),
+    annotate: str | None = None,
+    axis_triad: bool = False,
+    flip_x: bool = False,
+    scalebar_frac: float | None = None,
+    scalebar_label: str | None = None,
     filename: str | None = None,
     return_scene: bool = False,
 ):
@@ -471,19 +669,32 @@ def volume_image(
             unit_system=unit_system,
         )
 
+    triad = _camera_basis(azimuth, elevation, rot_axis, 0.0) if axis_triad else None
+
     if mode == "projection":
         arr, unit = _make_projection(
             grid, field, azimuth=azimuth, elevation=elevation, rot_axis=rot_axis,
             angle=0.0, zoom=zoom, resolution=resolution, weight=weight,
         )
-        vlo, vhi = _auto_bounds(arr, log=log)
-        if vmin is not None:
-            vlo = vmin
-        if vmax is not None:
-            vhi = vmax
+        # Only derive the bounds that were not supplied.  Deriving them from this
+        # frame's data would fail on an empty frame (e.g. a selection with no
+        # cells in the box early on); when both limits are fixed upstream — as
+        # evolution_movie always does — we must not touch the data at all.
+        auto_lo = auto_hi = None
+        if vmin is None or vmax is None:
+            if norm == "symlog":
+                v = _sym_bounds(arr, round_nice=True)
+                auto_lo, auto_hi = -v, v
+            else:
+                auto_lo, auto_hi = _auto_bounds(arr, log=(norm == "log"))
+        vlo = vmin if vmin is not None else auto_lo
+        vhi = vmax if vmax is not None else auto_hi
         if filename is not None:
-            _save_projection(arr, filename, colorbar=colorbar, cmap=cmap, log=log,
-                             vmin=vlo, vmax=vhi, label=_projection_label(field, unit))
+            _save_projection(arr, filename, colorbar=colorbar, cmap=cmap, norm=norm,
+                             vmin=vlo, vmax=vhi, linthresh=linthresh,
+                             label=_projection_label(field, unit, weighted=weight is not None),
+                             annotate=annotate, triad=triad, flip_x=flip_x,
+                             scalebar_frac=scalebar_frac, scalebar_label=scalebar_label)
         return grid
 
     sc, ds, _, vlo, vhi = _make_scene(
@@ -497,7 +708,9 @@ def volume_image(
 
     if filename is not None:
         _save_scene(sc, filename, sigma_clip=sigma_clip, colorbar=colorbar,
-                    field=field, log=log, grid=grid, vmin=vlo, vmax=vhi, cmap=cmap)
+                    field=field, norm=norm, grid=grid, vmin=vlo, vmax=vhi, cmap=cmap,
+                    linthresh=linthresh, annotate=annotate, triad=triad, flip_x=flip_x,
+                    scalebar_frac=scalebar_frac, scalebar_label=scalebar_label)
 
     if return_scene:
         return sc, grid
@@ -529,6 +742,8 @@ def volume_movie(
     gamma: float = 2.5,
     n_layers: int = 5,
     cmap: str = "magma",
+    norm: str = "log",
+    linthresh: float = 1.0,
     grey_opacity: bool = True,
     colorbar: bool = False,
     sigma_clip: float | None = 4.0,
@@ -598,7 +813,12 @@ def volume_movie(
                 angle=a, zoom=zoom, resolution=resolution, weight=weight,
             )
             samples.append(np.asarray(arr).ravel())
-        rlo, rhi = _auto_bounds(np.concatenate(samples), log=log)
+        allv = np.concatenate(samples)
+        if norm == "symlog":
+            v = _sym_bounds(allv, round_nice=True)
+            rlo, rhi = -v, v
+        else:
+            rlo, rhi = _auto_bounds(allv, log=(norm == "log"))
         vmin = rlo if vmin is None else vmin
         vmax = rhi if vmax is None else vmax
 
@@ -608,7 +828,7 @@ def volume_movie(
         resolution=resolution,
     )
     cam_kw = dict(elevation=elevation, rot_axis=rot_axis, zoom=zoom,
-                  mode=mode, weight=weight)
+                  mode=mode, weight=weight, norm=norm, linthresh=linthresh)
 
     if n_jobs and n_jobs > 1 and len(frame_indices) > 1:
         frame_paths = _render_frames_parallel(
@@ -651,8 +871,8 @@ def _render_frame_subset(
         )
         path = os.path.join(frames_dir, f"frame_{idx:05d}.png")
         _save_scene(sc, path, sigma_clip=sigma_clip, colorbar=colorbar,
-                    field=field, log=scene_kw["log"], grid=grid,
-                    vmin=vlo, vmax=vhi, cmap=scene_kw["cmap"])
+                    field=field, norm=cam_kw["norm"], linthresh=cam_kw["linthresh"],
+                    grid=grid, vmin=vlo, vmax=vhi, cmap=scene_kw["cmap"])
         frame_paths.append(path)
         if verbose:
             print(f"[richio.render] frame {idx + 1}/{n_frames} -> {path}", flush=True)
@@ -675,8 +895,10 @@ def _render_projection_frames(
         )
         path = os.path.join(frames_dir, f"frame_{idx:05d}.png")
         _save_projection(arr, path, colorbar=colorbar, cmap=scene_kw["cmap"],
-                         log=scene_kw["log"], vmin=vlo, vmax=vhi,
-                         label=_projection_label(field, unit))
+                         norm=cam_kw["norm"], linthresh=cam_kw["linthresh"],
+                         vmin=vlo, vmax=vhi,
+                         label=_projection_label(field, unit,
+                                                 weighted=cam_kw["weight"] is not None))
         frame_paths.append(path)
         if verbose:
             print(f"[richio.render] frame {idx + 1}/{n_frames} -> {path}", flush=True)
