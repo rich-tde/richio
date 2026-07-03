@@ -487,8 +487,9 @@ class Snapshot:
         tree = KDTree(np.asarray(coords))
 
         xs = np.asarray(xspace, dtype="float64")
-        yy, zz = np.meshgrid(np.asarray(yspace, dtype="float64"),
-                             np.asarray(zspace, dtype="float64"), indexing="ij")
+        yy, zz = np.meshgrid(
+            np.asarray(yspace, dtype="float64"), np.asarray(zspace, dtype="float64"), indexing="ij"
+        )
         yz = np.column_stack([yy.ravel(), zz.ravel()])  # (ny*nz, 2)
         del yy, zz
 
@@ -499,11 +500,11 @@ class Snapshot:
         for a in range(0, nx, slab):
             m = min(slab, nx - a)
             b = block[: m * plane_pts]
-            b[:, 0] = np.repeat(xs[a:a + m], plane_pts)
+            b[:, 0] = np.repeat(xs[a : a + m], plane_pts)
             b[:, 1] = np.tile(yz[:, 0], m)
             b[:, 2] = np.tile(yz[:, 1], m)
             _, idx = tree.query(b, k=1, eps=0, p=2, workers=workers)
-            i_local[a:a + m] = idx.reshape(m, ny, nz)
+            i_local[a : a + m] = idx.reshape(m, ny, nz)
 
         # Map local indices back to absolute indices in the original particle array
         if selection is not None:
@@ -681,6 +682,47 @@ class Snapshot:
         )
         sliced_data = self._get_data(data)[i].in_base(unit_system)
         return sliced_data, xspace, yspace
+
+    def profile(
+        self,
+        data: str | ArrayLike,
+        weights: str | ArrayLike = "none",
+        res: int = 100,
+        X: str = "X",
+        Y: str = "Y",
+        Z: str = "Z",
+    ):
+        if isinstance(weights, str):
+            weights_name = weights
+        else:
+            weights_name = "none"
+
+        data = self._get_data(data)
+        if weights_name != "none":
+            weights = self._get_data(weights_name)
+        X = self._get_data(X)
+        Y = self._get_data(Y)
+        Z = self._get_data(Z)
+
+        r = (X**2 + Y**2 + Z**2) ** (1 / 2)
+
+        rbins = np.logspace(np.log10(np.min(r)), np.log10(np.max(r)), res)
+        rbins *= r.units
+        if weights_name != "none":
+            profile, bin_edges = np.histogram(r, rbins, weights=weights * data)
+        else:
+            profile, bin_edges = np.histogram(r, rbins, weights=data)
+
+        if weights_name == "volume":
+            profile /= 4 / 3 * np.pi * ((rbins[1:]) ** 3 - (rbins[:-1]) ** 3)
+        elif weights_name == "none":
+            weights_hist, bin_edges = np.histogram(r, rbins)
+            profile /= weights_hist
+        else:
+            weights_hist, bin_edges = np.histogram(r, rbins, weights=weights)
+            profile /= weights_hist
+
+        return profile, rbins[1:]
 
     def clip(
         self,
