@@ -1,6 +1,92 @@
 site_name: RICHIO
-# 
 site_author: Yujie He
-# 
+site_description: I/O and analysis library for RICH moving-mesh radiative-hydro simulations.
+repo_url: https://github.com/YujieH3/richio
+repo_name: YujieH3/richio
+
+docs_dir: docs
+
 theme:
-  name: readthedocs
+  name: material
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/weather-night
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to light mode
+  features:
+    - navigation.sections
+    - navigation.top
+    - navigation.tracking
+    - toc.follow
+    - content.code.copy
+    - search.highlight
+    - search.suggest
+
+extra_css:
+  - css/extra.css
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.details
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
+
+plugins:
+  - search
+  - mkdocstrings:
+      default_handler: python
+      handlers:
+        python:
+          options:
+            docstring_style: sphinx
+            show_source: true
+            show_root_heading: true
+            show_root_full_path: false
+            members_order: source
+            separate_signature: true
+            show_signature_annotations: true
+            merge_init_into_class: true
+            filters:
+              - "!^_"
+
+nav:
+  - Home: index.md
+  - Getting started:
+      - Installation: getting-started/installation.md
+      - Quickstart: getting-started/quickstart.md
+  - User guide:
+      - Loading snapshots: guide/loading-snapshots.md
+      - Fields and aliases: guide/fields-and-aliases.md
+      - Units: guide/units.md
+      - Selecting regions: guide/selecting-regions.md
+      - Slices and projections: guide/slices-and-projections.md
+      - Plotting: guide/plotting.md
+      - Volume rendering (optional): guide/volume-rendering.md
+      - Shock finding (optional): guide/shock-finding.md
+  - API reference:
+      - richio.data: api/data.md
+      - richio.units: api/units.md
+      - richio.config: api/config.md
+      - richio.plots: api/plots.md
+      - richio.render: api/render.md
+      - richio.shockfinder: api/shockfinder.md
+  - About:
+      - Contributing & building the docs: about/contributing.md

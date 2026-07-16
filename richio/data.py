@@ -67,7 +67,6 @@ def load(path):
     ``.txt`` files.
 
     :param path: Path to an HDF5 snapshot file or to a directory of NPY files.
-    :type path: str
     :returns: The loaded snapshot object.
     :rtype: :class:`SnapshotH5` or :class:`SnapshotNPY`
     :raises FileNotFoundError: If *path* is neither a valid file nor a directory.
@@ -96,7 +95,6 @@ class Snapshot:
     :func:`load` instead.
 
     :param path: Path to the snapshot file or directory.
-    :type path: str
 
     Attributes
     ----------
@@ -158,7 +156,6 @@ class Snapshot:
         alias can be used as an attribute.
 
         :param name: Field name or alias.
-        :type name: str
         :raises AttributeError: If *name* is not a known field or alias.
         """
         try:
@@ -170,7 +167,6 @@ class Snapshot:
         """Return the canonical field name for *key*, resolving any alias.
 
         :param key: Field name or alias.
-        :type key: str
         :returns: Canonical key from :data:`~richio.config.FIELD_REGISTRY`,
                   or *key* unchanged if not found.
         :rtype: str
@@ -233,10 +229,8 @@ class Snapshot:
         :param unit_system: Unit system used for displaying values: ``'rich'``
                             (code solar units, default), ``'cgs'``, or
                             ``'mks'``.
-        :type unit_system: str
         :param show_aliases: Whether to include an *Aliases* column in the
                              field table.  Defaults to ``True``.
-        :type show_aliases: bool
 
         Examples::
 
@@ -320,7 +314,6 @@ class Snapshot:
         :class:`numpy.ndarray` (treated as dimensionless with a warning).
 
         :param data: Field name, unit-bearing array, or dimensionless array.
-        :type data: str or ArrayLike
         :returns: Data array with units attached.
         :rtype: :class:`unyt.unyt_array`
         :raises TypeError: For unsupported input types.
@@ -362,30 +355,21 @@ class Snapshot:
 
         :param data: Field to project — field name string or array of shape
                      ``(N,)``.
-        :type data: str or ArrayLike
         :param res: Grid resolution — single integer for a cubic grid, or a
                     three-element sequence ``(nx, ny, nz)``.
-        :type res: int or ArrayLike
         :param X: x-coordinates of cell centres (field name or array).
                   Defaults to ``"X"``.
-        :type X: str or ArrayLike
         :param Y: y-coordinates of cell centres. Defaults to ``"Y"``.
-        :type Y: str or ArrayLike
         :param Z: z-coordinates of cell centres. Defaults to ``"Z"``.
-        :type Z: str or ArrayLike
         :param box_size: Domain bounds ``[x0, y0, z0, x1, y1, z1]``.  Reads
                          from the snapshot's ``box`` field when ``None``.
-        :type box_size: ArrayLike or None
         :param unit_system: Target unit system for the output (``'cgs'``,
                             ``'rich'``, etc.).  Defaults to ``'cgs'``.
-        :type unit_system: str
         :param selection: Boolean mask of shape ``(N,)`` to restrict which
                           cells are used.  Defaults to ``None`` (all cells).
-        :type selection: ArrayLike or None
         :param plane: Projection plane (e.g. ``"xy"``, ``"xz"``, ``"yz"``).
                       Determines which axis is integrated over.  ``None``
                       (default) integrates along Z.
-        :type plane: str or None
         :returns: Tuple ``(projected_data, xspace, yspace)`` where
                   *projected_data* has shape ``(nx-1, ny-1)`` and *xspace* /
                   *yspace* are 1-D coordinate arrays.
@@ -414,6 +398,7 @@ class Snapshot:
         selection: ArrayLike = None,
         endpoint: bool = False,
         plane: str | None = None,
+        workers: int = 1,
     ):
         """Interpolate cell centres onto a regular 3-D Cartesian grid.
 
@@ -424,30 +409,22 @@ class Snapshot:
 
         :param res: Grid resolution — single integer for a cubic grid or a
                     three-element sequence ``(nx, ny, nz)``.
-        :type res: int or ArrayLike
         :param X: x-coordinates of cell centres. Defaults to ``"X"``.
-        :type X: str or ArrayLike
         :param Y: y-coordinates of cell centres. Defaults to ``"Y"``.
-        :type Y: str or ArrayLike
         :param Z: z-coordinates of cell centres. Defaults to ``"Z"``.
-        :type Z: str or ArrayLike
         :param box_size: Domain bounds ``[x0, y0, z0, x1, y1, z1]``.  Reads
                          from the snapshot's ``box`` field when ``None``.
-        :type box_size: ArrayLike or None
         :param selection: Boolean mask ``(N,)`` to restrict which cells are
                           used.  Defaults to ``None``.
-        :type selection: ArrayLike or None
         :param endpoint: If ``True`` the grid spacing is
                          ``(hi-lo)/(n-1)``; if ``False`` (default) it is
                          ``(hi-lo)/n`` so the grid never reaches the upper
                          boundary.
-        :type endpoint: bool
         :param plane: Projection plane, e.g. ``"xy"``, ``"xz"``, ``"yz"``.
                       Permutes the coordinate axes so that the third axis (the
                       integration axis for :meth:`project`) matches the normal
                       of the requested plane.  ``None`` (default) leaves the
                       axis order unchanged (integrates along Z).
-        :type plane: str or None
         :returns: Tuple ``(i, xspace, yspace, zspace)`` where *i* has shape
                   ``(nx, ny, nz)`` and contains **absolute** indices into the
                   original particle array, so ``snap.density[i]`` gives the
@@ -471,12 +448,13 @@ class Snapshot:
         else:
             x0, y0, z0, x1, y1, z1 = box_size
 
-            # Assign default unit if not provided
-            for l in [x0, y0, z0, x1, y1, z1]:
-                if isinstance(l, u.unyt_quantity):
-                    continue
-                else:
-                    l = l * units.lscale
+            # Assign the default (code length ~ R_sun) unit to any bare number,
+            # so an explicit numeric box works like a unit-bearing one and the
+            # returned coordinate spaces carry units.
+            def _as_len(v):
+                return v if isinstance(v, u.unyt_quantity) else v * units.lscale
+
+            x0, y0, z0, x1, y1, z1 = (_as_len(v) for v in (x0, y0, z0, x1, y1, z1))
 
         # Permute axes so that Z is the integration axis for the requested plane
         if plane is not None:
@@ -498,14 +476,35 @@ class Snapshot:
         yspace = np.linspace(y0, y1, ny, endpoint=endpoint)
         zspace = np.linspace(z0, z1, nz, endpoint=endpoint)
 
-        grid_x, grid_y, grid_z = np.meshgrid(xspace, yspace, zspace, indexing="ij")
+        # Nearest-neighbour resample.  Build the k-d tree once and query the grid
+        # in x-slabs, filling the (nx, ny, nz) index cube, instead of
+        # materialising the whole (nx, ny, nz, 3) query array — that array alone
+        # is ~50 GB at res 1024 and would blow the node memory.  Peak transient is
+        # one slab of query points; the result is identical to a single query.
+        from scipy.spatial import KDTree
 
         coords = np.stack([X, Y, Z], axis=-1)  # coordinates of the particles
-        grid_coords = np.stack(
-            [grid_x, grid_y, grid_z], axis=-1
-        )  # coordinates of the grid (query points)
+        tree = KDTree(np.asarray(coords))
 
-        i_local = _kdtree_interpolate(coords=coords, grid_coords=grid_coords)
+        xs = np.asarray(xspace, dtype="float64")
+        yy, zz = np.meshgrid(
+            np.asarray(yspace, dtype="float64"), np.asarray(zspace, dtype="float64"), indexing="ij"
+        )
+        yz = np.column_stack([yy.ravel(), zz.ravel()])  # (ny*nz, 2)
+        del yy, zz
+
+        plane_pts = ny * nz
+        slab = max(1, int(8_000_000 // max(plane_pts, 1)))  # ~8M query points/chunk
+        block = np.empty((slab * plane_pts, 3), dtype="float64")
+        i_local = np.empty((nx, ny, nz), dtype=np.intp)
+        for a in range(0, nx, slab):
+            m = min(slab, nx - a)
+            b = block[: m * plane_pts]
+            b[:, 0] = np.repeat(xs[a : a + m], plane_pts)
+            b[:, 1] = np.tile(yz[:, 0], m)
+            b[:, 2] = np.tile(yz[:, 1], m)
+            _, idx = tree.query(b, k=1, eps=0, p=2, workers=workers)
+            i_local[a : a + m] = idx.reshape(m, ny, nz)
 
         # Map local indices back to absolute indices in the original particle array
         if selection is not None:
@@ -535,29 +534,20 @@ class Snapshot:
         looked up with a single ``field[i]`` without repeating the interpolation.
 
         :param res: Grid resolution — single integer (square) or ``(nx, ny)``.
-        :type res: int or ArrayLike
         :param X: x-coordinates of cell centres. Defaults to ``"X"``.
-        :type X: str or ArrayLike
         :param Y: y-coordinates of cell centres. Defaults to ``"Y"``.
-        :type Y: str or ArrayLike
         :param Z: z-coordinates of cell centres. Defaults to ``"Z"``.
-        :type Z: str or ArrayLike
         :param plane: Slice plane, e.g. ``"xy"`` (default), ``"yz"``, ``"zx"``.
-        :type plane: str
         :param slice_coord: Normal-axis coordinate at which to slice.
                             Defaults to ``0``.
-        :type slice_coord: float or :class:`unyt.unyt_quantity`
         :param box_size: Domain bounds ``[x0, y0, z0, x1, y1, z1]`` (6-element)
                          or ``[x0, y0, x1, y1]`` (4-element, plane only).
                          Auto-detected when ``None``.
-        :type box_size: ArrayLike or None
         :param selection: Boolean mask ``(N,)`` to restrict which cells are
                           used.  Defaults to ``None`` (all cells).
-        :type selection: ArrayLike or None
         :param volume_selection: Pre-filter to cells within one cell-size of
                                  the plane to speed up the k-d tree query.
                                  Defaults to ``True``.
-        :type volume_selection: bool
         :returns: Tuple ``(i, xspace, yspace)`` where *i* has shape ``(nx, ny)``
                   and contains **absolute** indices into the original particle
                   array (before any masking), so ``snap.density[i]`` gives the
@@ -664,29 +654,18 @@ class Snapshot:
         :meth:`to_2dgrid` directly and index each field with the returned *i*.
 
         :param data: Field to slice — name string or array of shape ``(N,)``.
-        :type data: str or ArrayLike
         :param res: Grid resolution — integer (square) or ``(nx, ny)`` tuple.
-        :type res: int or ArrayLike
         :param X: x-coordinates. Defaults to ``"X"``.
-        :type X: str or ArrayLike
         :param Y: y-coordinates. Defaults to ``"Y"``.
-        :type Y: str or ArrayLike
         :param Z: z-coordinates. Defaults to ``"Z"``.
-        :type Z: str or ArrayLike
         :param plane: Slice plane. Defaults to ``"xy"``.
-        :type plane: str
         :param slice_coord: Normal-axis coordinate at which to slice.
                             Defaults to ``0``.
-        :type slice_coord: float or :class:`unyt.unyt_quantity`
         :param box_size: Domain bounds. Auto-detected when ``None``.
-        :type box_size: ArrayLike or None
         :param selection: Boolean cell mask. Defaults to ``None`` (all cells).
-        :type selection: ArrayLike or None
         :param unit_system: Output unit system. Defaults to ``'cgs'``.
-        :type unit_system: str
         :param volume_selection: Pre-filter cells near the slice plane.
                                  Defaults to ``True``.
-        :type volume_selection: bool
         :returns: Tuple ``(sliced_data, xspace, yspace)``.
         :rtype: tuple
         """
@@ -704,6 +683,154 @@ class Snapshot:
         sliced_data = self._get_data(data)[i].in_base(unit_system)
         return sliced_data, xspace, yspace
 
+    def profile(
+        self,
+        data: str | ArrayLike,
+        weights: str | ArrayLike = "none",
+        res: int = 100,
+        X: str = "X",
+        Y: str = "Y",
+        Z: str = "Z",
+    ):
+        if isinstance(weights, str):
+            weights_name = weights
+        else:
+            weights_name = "none"
+
+        data = self._get_data(data)
+        if weights_name != "none":
+            weights = self._get_data(weights_name)
+        X = self._get_data(X)
+        Y = self._get_data(Y)
+        Z = self._get_data(Z)
+
+        r = (X**2 + Y**2 + Z**2) ** (1 / 2)
+
+        rbins = np.logspace(np.log10(np.min(r)), np.log10(np.max(r)), res)
+        rbins *= r.units
+        if weights_name != "none":
+            profile, bin_edges = np.histogram(r, rbins, weights=weights * data)
+        else:
+            profile, bin_edges = np.histogram(r, rbins, weights=data)
+
+        if weights_name == "volume":
+            profile /= 4 / 3 * np.pi * ((rbins[1:]) ** 3 - (rbins[:-1]) ** 3)
+        elif weights_name == "none":
+            weights_hist, bin_edges = np.histogram(r, rbins)
+            profile /= weights_hist
+        else:
+            weights_hist, bin_edges = np.histogram(r, rbins, weights=weights)
+            profile /= weights_hist
+
+        return profile, rbins[1:]
+
+    def clip(
+        self,
+        box: ArrayLike | None = None,
+        center: ArrayLike | None = None,
+        width: float | u.unyt_quantity | ArrayLike | None = None,
+        mask: ArrayLike | None = None,
+        X: str | ArrayLike = "X",
+        Y: str | ArrayLike = "Y",
+        Z: str | ArrayLike = "Z",
+    ) -> "ClippedSnapshot":
+        """Return a :class:`ClippedSnapshot` holding only a region of cells.
+
+        The clip is a *lazy view*: it stores only this snapshot, a boolean
+        selection mask, and the clip box.  No field data is copied — each field
+        access on the clip re-reads the parent field and applies the mask, so
+        the clip is a drop-in :class:`Snapshot` that geometry methods
+        (:meth:`project`, :meth:`slice`) and the shock finder operate on
+        unchanged.
+
+        The region can be specified in any combination of:
+
+        * ``box`` — explicit bounds ``[x0, y0, z0, x1, y1, z1]``;
+        * ``center`` + ``width`` — an axis-aligned box of side ``width``
+          (scalar or per-axis) centred on ``center``;
+        * ``mask`` — an arbitrary boolean array of shape ``(N,)`` or an array of
+          integer indices.
+
+        When several are given they are combined with logical AND.  Bare
+        (unitless) numbers for ``box`` / ``center`` / ``width`` are interpreted
+        in code length units (``units.lscale``).
+
+        :param box: Explicit bounds ``[x0, y0, z0, x1, y1, z1]``.
+        :param center: Box centre ``[cx, cy, cz]`` (used with ``width``).
+        :param width: Box side length — scalar or ``[wx, wy, wz]`` (used with
+                      ``center``).
+        :param mask: Boolean mask ``(N,)`` or integer index array.
+        :param X: x-coordinate field name or array. Defaults to ``"X"``.
+        :param Y: y-coordinate field name or array. Defaults to ``"Y"``.
+        :param Z: z-coordinate field name or array. Defaults to ``"Z"``.
+        :returns: A lazy regional view of this snapshot.
+        :rtype: :class:`ClippedSnapshot`
+        :raises ValueError: If no region is specified, or if ``center`` is given
+                            without ``width`` (or vice versa).
+
+        Examples::
+
+            clip = snap.clip(box=[-1, -1, -1, 1, 1, 1])
+            clip = snap.clip(center=[0, 0, 0], width=snap.box[3] / 4)
+            clip = snap.clip(mask=snap.density.v > 1e-15)
+        """
+        x = self._get_data(X)
+        y = self._get_data(Y)
+        z = self._get_data(Z)
+
+        sel = np.ones(len(x), dtype=bool)
+        clip_box = None
+
+        def _as_length(val):
+            # Attach code length units to bare numbers, mirroring to_2dgrid.
+            if isinstance(val, (u.unyt_array, u.unyt_quantity)):
+                return val
+            return np.asarray(val, dtype=float) * units.lscale
+
+        if (center is None) != (width is None):
+            raise ValueError("`center` and `width` must be given together.")
+
+        if center is not None:
+            center = _as_length(center)
+            half = _as_length(width) / 2
+            # broadcast a scalar half-width to all three axes
+            half = half * np.ones(3) if np.ndim(half.value) == 0 else half
+            lo = center - half
+            hi = center + half
+            box = [lo[0], lo[1], lo[2], hi[0], hi[1], hi[2]]
+
+        if box is not None:
+            x0, y0, z0, x1, y1, z1 = (_as_length(b) for b in box)
+            sel &= (x >= x0) & (x <= x1)
+            sel &= (y >= y0) & (y <= y1)
+            sel &= (z >= z0) & (z <= z1)
+            clip_box = u.unyt_array([x0, y0, z0, x1, y1, z1])
+
+        if mask is not None:
+            mask = np.asarray(mask)
+            if mask.dtype == bool:
+                sel &= mask
+            else:  # integer indices
+                idx_mask = np.zeros(len(x), dtype=bool)
+                idx_mask[mask] = True
+                sel &= idx_mask
+
+        if box is None and mask is None:
+            raise ValueError("No region specified: pass `box`, `center`+`width`, or `mask`.")
+
+        # When no explicit box was given, frame the clip on the bounding box of
+        # the selected cells so projections/slices default to the region.
+        if clip_box is None:
+            if sel.any():
+                xs, ys, zs = x[sel], y[sel], z[sel]
+                clip_box = u.unyt_array(
+                    [xs.min(), ys.min(), zs.min(), xs.max(), ys.max(), zs.max()]
+                )
+            else:
+                clip_box = self.box
+
+        return ClippedSnapshot(self, sel, clip_box)
+
 
 class SnapshotH5(Snapshot):
     """RICH snapshot backed by a single HDF5 file.
@@ -713,7 +840,6 @@ class SnapshotH5(Snapshot):
     are also supported — fields are read from the root.
 
     :param path: Path to the ``.h5`` or ``.hdf5`` snapshot file.
-    :type path: str
 
     Attributes
     ----------
@@ -770,7 +896,6 @@ class SnapshotH5(Snapshot):
             snap['density', ::-1]    # reversed
 
         :param key: Field name (or alias), or a tuple ``(field, slice)``.
-        :type key: str or tuple
         :returns: Field data with physical units attached.
         :rtype: :class:`unyt.unyt_array`
         :raises KeyError: If the field is not found in the HDF5 file.
@@ -864,7 +989,6 @@ class SnapshotNPY(Snapshot):
     pattern and used to locate the correct files.
 
     :param path: Path to the directory containing ``.npy`` / ``.txt`` files.
-    :type path: str
     """
 
     _field_aliases = _build_npy_aliases()
@@ -914,7 +1038,6 @@ class SnapshotNPY(Snapshot):
             snap['density', 1:10]    # rows 1–9
 
         :param key: Field name (or alias), or a tuple ``(field, slice)``.
-        :type key: str or tuple
         :returns: Field data with physical units attached.
         :rtype: :class:`unyt.unyt_array`
         :raises FileNotFoundError: If neither ``.npy`` nor ``.txt`` file is
@@ -964,6 +1087,83 @@ class SnapshotNPY(Snapshot):
         return length
 
 
+class ClippedSnapshot(Snapshot):
+    """A lazy regional view of a :class:`Snapshot` (a "sub-snapshot").
+
+    Created via :meth:`Snapshot.clip`.  Holds only a reference to the parent
+    snapshot, a boolean selection mask over the parent's cells, and the clip
+    box — **no field data is copied**.  Each field access re-reads the parent
+    field from disk and applies the mask, so the clip behaves as a drop-in
+    :class:`Snapshot`: :meth:`project`, :meth:`slice`, the plotter, and the
+    shock finder all work on it unchanged, returning per-cell results of length
+    ``len(clip)``.
+
+    Because :class:`SnapshotH5` already concatenates data across MPI ranks
+    before returning a field, the mask is a single flat array in the parent's
+    absolute index space — ranks need no special handling here.
+
+    :param parent: The snapshot being clipped.
+    :param mask: Boolean array of shape ``(len(parent),)`` selecting cells.
+    :param box: Six-element ``[x0, y0, z0, x1, y1, z1]`` clip bounds returned by
+                this clip's ``box`` field.
+
+    Attributes
+    ----------
+    parent : :class:`Snapshot`
+        The snapshot this clip is a view of.
+    mask : :class:`numpy.ndarray`
+        Boolean selection mask over the parent's cells.
+    """
+
+    def __init__(self, parent: "Snapshot", mask: np.ndarray, box: u.unyt_array):
+        self.parent = parent
+        self.mask = np.asarray(mask, dtype=bool)
+        self._box = box
+        self.path = parent.path
+        self.snapnum = parent.snapnum
+        self.plots = SnapshotPlotter(self)  # plotter rebound to this clip
+        self._field_aliases = parent._field_aliases  # for info()/_field_info
+
+    def _resolve_field_name(self, key: str) -> str:
+        """Resolve *key* to a canonical field name via the parent's alias table."""
+        return self.parent._resolve_field_name(key)
+
+    def __getitem__(self, key) -> u.unyt_array:
+        """Return a field restricted to the clipped region.
+
+        Per-cell fields (length equal to the parent's cell count) are indexed
+        with the selection mask; the ``Box`` field returns the clip box; all
+        other metadata (e.g. scalar ``Time``/``Cycle``) passes through
+        unchanged.
+
+        :param key: Field name (or alias), or a tuple ``(field, slice)``.
+        :returns: Masked field data with physical units attached.
+        :rtype: :class:`unyt.unyt_array`
+        """
+        if isinstance(key, tuple):
+            field, idx = key[0], key[1]
+        else:
+            field, idx = key, slice(None)
+
+        canon = self._resolve_field_name(field)
+
+        if canon == "Box":
+            return self._box[idx]
+
+        arr = self.parent[field]
+        if np.ndim(arr) > 0 and len(arr) == len(self.parent):
+            return arr[self.mask][idx]
+        return arr  # scalar / metadata field: pass through unmasked
+
+    def __len__(self) -> int:
+        """Return the number of cells selected by the clip mask."""
+        return int(self.mask.sum())
+
+    def keys(self) -> list:
+        """Return the parent snapshot's field names (the clip exposes the same fields)."""
+        return self.parent.keys()
+
+
 def _parse_plane(plane, x, y, z):
     """Permute ``(x, y, z)`` so that the first two axes match *plane*.
 
@@ -974,7 +1174,6 @@ def _parse_plane(plane, x, y, z):
 
     :param plane: Two-character string specifying the slice plane, e.g.
                   ``"xy"``, ``"yz"``, ``"zx"``, ``"yx"``, etc.
-    :type plane: str
     :param x: x-data (scalar, array, or unyt_array).
     :param y: y-data.
     :param z: z-data.
@@ -1016,19 +1215,14 @@ def _kdtree_interpolate(coords, grid_coords, k=1, eps=0, workers=1):
     point for each query.
 
     :param coords: Source point coordinates, shape ``(N, 3)``.
-    :type coords: array-like
     :param grid_coords: Query point coordinates, shape ``(nx, ny[, nz], 3)``
                         or ``(M, 3)``.
-    :type grid_coords: array-like
     :param k: Number of nearest neighbours to find.  Defaults to ``1``.
-    :type k: int
     :param eps: Approximate search tolerance passed to
                 :meth:`scipy.spatial.KDTree.query`.  Defaults to ``0``
                 (exact).
-    :type eps: float
     :param workers: Number of parallel workers for the query.  Defaults to
                     ``1``.
-    :type workers: int
     :returns: Index array of nearest-source indices, same leading shape as
               *grid_coords* (minus the last coordinate dimension).
     :rtype: :class:`numpy.ndarray`

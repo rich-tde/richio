@@ -1,0 +1,10 @@
+/* RICHIO docs — small tweaks on top of the Material theme.
+ *
+ * Material already styles the mkdocstrings API reference with consistent
+ * spacing, so the heavy spacing fixes the readthedocs theme needed are gone.
+ * Keep only a light touch here. */
+
+/* Make the "Source code" dropdown summary clearly clickable. */
+details.mkdocstrings-source > summary {
+  cursor: pointer;
+}
