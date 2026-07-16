@@ -153,6 +153,10 @@ class SnapshotPlotter:
         :param aspect_equal: Set equal aspect ratio on the axes.
                              Defaults to ``True``.
         :type aspect_equal: bool
+        :param log_scale: Plot ``log₁₀`` of the data and label the colorbar
+                          accordingly.  Set to ``False`` for a linear scale.
+                          Defaults to ``True``.
+        :type log_scale: bool
         :param kwargs: Additional keyword arguments forwarded to
                        :func:`~matplotlib.pyplot.pcolormesh` (e.g. ``vmin``,
                        ``vmax``).
@@ -206,6 +210,7 @@ class SnapshotPlotter:
         label_latex: str = "",  # TODO: make them automatic from data name
         unit_latex: str | None = None,
         aspect_equal: bool = True,
+        log_scale: bool = True,
         **kwargs,
     ):
         """Compute a column-integrated projection and render it as a plot.
@@ -247,6 +252,10 @@ class SnapshotPlotter:
         :type unit_latex: str or None
         :param aspect_equal: Set equal aspect ratio. Defaults to ``True``.
         :type aspect_equal: bool
+        :param log_scale: Plot ``log₁₀`` of the data and label the colorbar
+                          accordingly.  Set to ``False`` for a linear scale.
+                          Defaults to ``True``.
+        :type log_scale: bool
         :param kwargs: Extra keyword arguments forwarded to
                        :func:`~matplotlib.pyplot.pcolormesh`.
         :returns: Tuple ``(ax, im, projected_data)``.
@@ -273,6 +282,7 @@ class SnapshotPlotter:
             label_latex=label_latex,
             unit_latex=unit_latex,
             aspect_equal=aspect_equal,
+            log_scale=log_scale,
             **kwargs,
         )
 
@@ -354,7 +364,11 @@ def scalar_map(
         xgrid, ygrid, f, cmap=cmap, **kw
     )  # return im as well in case you want to customise colorbar
 
-    plt.colorbar(im, ax=ax, label=f"$\\log[{label_latex}/{unit_latex}]$")
+    if log_scale:
+        colorbar_label = f"$\\log[{label_latex}/{unit_latex}]$"
+    else:
+        colorbar_label = f"${label_latex}/{unit_latex}$"
+    plt.colorbar(im, ax=ax, label=colorbar_label)
 
     if aspect_equal:
         ax.set_aspect("equal", adjustable="box")
