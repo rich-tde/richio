@@ -135,6 +135,9 @@ class SnapshotPlotter:
                            the data when ``None``.
         :param aspect_equal: Set equal aspect ratio on the axes.
                              Defaults to ``True``.
+        :param log_scale: Plot ``log₁₀`` of the data and label the colorbar
+                          accordingly.  Set to ``False`` for a linear scale.
+                          Defaults to ``True``.
         :param kwargs: Additional keyword arguments forwarded to
                        :func:`~matplotlib.pyplot.pcolormesh` (e.g. ``vmin``,
                        ``vmax``).
@@ -354,7 +357,11 @@ def scalar_map(
         xgrid, ygrid, f, cmap=cmap, **kw
     )  # return im as well in case you want to customise colorbar
 
-    plt.colorbar(im, ax=ax, label=f"$\\log[{label_latex}/{unit_latex}]$")
+    if log_scale:
+        colorbar_label = f"$\\log[{label_latex}/{unit_latex}]$"
+    else:
+        colorbar_label = f"${label_latex}/{unit_latex}$"
+    plt.colorbar(im, ax=ax, label=colorbar_label)
 
     if aspect_equal:
         ax.set_aspect("equal", adjustable="box")
