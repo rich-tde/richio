@@ -342,15 +342,20 @@ def scalar_map(
     kw = kwargs.copy()
 
     finite = f[np.isfinite(f)]
-    if "vmin" not in kw:
-        dmin = float(np.min(finite))
-        # round to nearest half-integers outward
-        vmin_default = np.floor(dmin * 2.0) / 2.0
-        kw["vmin"] = vmin_default
-    if "vmax" not in kw:
-        dmax = float(np.max(finite))
-        vmax_default = np.ceil(dmax * 2.0) / 2.0
-        kw["vmax"] = vmax_default
+    dmin = float(np.min(finite))
+    dmax = float(np.max(finite))
+    # When log_scale enabled, round out to the nearest half-integer, use the
+    # exact data range when whole data range is below 3 orders of magnitude.
+    if log_scale is True:
+        if dmax - dmin < 3:
+            vmin_default, vmax_default = dmin, dmax
+        else:
+            vmin_default = np.floor(dmin * 2.0) / 2.0
+            vmax_default = np.ceil(dmax * 2.0) / 2.0
+        if "vmin" not in kw:
+            kw["vmin"] = vmin_default
+        if "vmax" not in kw:
+            kw["vmax"] = vmax_default
 
     xgrid, ygrid = np.meshgrid(xspace, yspace, indexing="ij")
     im = ax.pcolormesh(
