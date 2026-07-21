@@ -724,6 +724,83 @@ class Snapshot:
 
         return profile, rbins[1:]
 
+    def line_profile(
+        self,
+        data: str | ArrayLike,
+        p0: ArrayLike,
+        p1: ArrayLike,
+        res: int = 200,
+        X: str | ArrayLike = "X",
+        Y: str | ArrayLike = "Y",
+        Z: str | ArrayLike = "Z",
+        selection: ArrayLike = None,
+        unit_system: str = "cgs",
+        workers: int = 1,
+    ):
+        """Sample *data* along the straight line from *p0* to *p1*.
+
+        Lays down ``res`` evenly spaced points between the two 3-D coordinates
+        and uses a nearest-neighbour k-d tree to pick the value of the cell
+        closest to each point.  Handy for a 1-D cut through a structure (e.g.
+        across a shock front) when neither the radial :meth:`profile` nor the
+        planar :meth:`slice` matches the geometry you care about.
+
+        Endpoints are unit-aware: a bare number is treated as a code-length
+        coordinate (``units.lscale`` ~ solar radius), exactly like
+        :meth:`to_3dgrid`; a :class:`unyt.unyt_quantity` is converted to the
+        coordinate units.
+
+        :param data: Field to sample — name string or array of shape ``(N,)``.
+        :param p0: Start point ``(x, y, z)`` of the line.
+        :param p1: End point ``(x, y, z)`` of the line.
+        :param res: Number of sample points along the line.  Defaults to ``200``.
+        :param X: x-coordinates of cell centres. Defaults to ``"X"``.
+        :param Y: y-coordinates of cell centres. Defaults to ``"Y"``.
+        :param Z: z-coordinates of cell centres. Defaults to ``"Z"``.
+        :param selection: Boolean mask ``(N,)`` restricting which cells are
+                          used.  Defaults to ``None`` (all cells).
+        :param unit_system: Unit system for the returned values (``'cgs'`` by
+                            default).
+        :param workers: Threads for the k-d tree query.  Defaults to ``1``.
+        :returns: Tuple ``(coords, distance, values)`` where *coords* is a
+                  ``(res, 3)`` :class:`unyt.unyt_array` of the sample positions,
+                  *distance* is a ``(res,)`` arc length from *p0* along the
+                  line, and *values* is a ``(res,)`` array in *unit_system*.
+                  Plot a profile with ``plt.plot(distance, values)``.
+        :rtype: tuple
+        """
+        # Coordinates of the cell centres (optionally restricted to a subset).
+        Xc = self._get_data(X)
+        Yc = self._get_data(Y)
+        Zc = self._get_data(Z)
+        if selection is not None:
+            Xc, Yc, Zc = Xc[selection], Yc[selection], Zc[selection]
+        length_unit = Xc.units
+
+        # Attach code-length units to any bare-number endpoint, mirroring the
+        # `_as_len` handling in `to_3dgrid`, then express both in the cell units.
+        def _as_len(v):
+            return v.to(length_unit) if isinstance(v, u.unyt_quantity) else v * units.lscale
+
+        p0 = u.unyt_array([_as_len(c) for c in p0]).to(length_unit)
+        p1 = u.unyt_array([_as_len(c) for c in p1]).to(length_unit)
+
+        # res points p0 + t*(p1 - p0), t in [0, 1]; distance is the arc length.
+        t = np.linspace(0.0, 1.0, res)
+        coords = p0 + t[:, None] * (p1 - p0)  # (res, 3), unit-aware
+        distance = t * float(np.linalg.norm((p1 - p0).value)) * length_unit  # (res,)
+
+        src = np.stack([np.asarray(Xc), np.asarray(Yc), np.asarray(Zc)], axis=-1)
+        i_local = _kdtree_interpolate(
+            coords=src, grid_coords=np.asarray(coords), workers=workers
+        )
+
+        # Map local indices back to absolute indices in the original array.
+        i = np.where(selection)[0][i_local] if selection is not None else i_local
+
+        values = self._get_data(data)[i].in_base(unit_system)
+        return coords, distance, values
+
     def clip(
         self,
         box: ArrayLike | None = None,
