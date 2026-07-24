@@ -135,11 +135,45 @@ def P2P1M(P2_P1: Floats, gamma: Floats = 5 / 3) -> Floats:
 # ---------------------------------------------------------------------------- #
 
 
+def _adjacency_1d(x: NDArray[np.floating]) -> tuple[NDArray[np.int32], NDArray[np.int32]]:
+    """Exact 1D Voronoi adjacency in CSR form.
+
+    In 1D the Voronoi diagram is trivial: sort the generators along the axis and
+    each cell's neighbours are the cells immediately before and after it (a
+    single neighbour at each end).  :class:`scipy.spatial.Voronoi` cannot handle
+    collinear points, so this replaces it for ``ndim == 1``.
+
+    :param x: 1D coordinate array, shape ``(N,)``.
+    :returns: ``(neighbor_data, neighbor_ptr)`` CSR arrays indexed by the
+              *original* (unsorted) cell order.
+    :rtype: tuple
+    """
+    n = len(x)
+    order = np.argsort(x, kind="stable")
+    sizes = np.full(n, 2, dtype=np.int32)
+    if n == 1:
+        sizes[:] = 0
+    else:
+        sizes[order[0]] = 1
+        sizes[order[-1]] = 1
+    neighbor_ptr = np.zeros(n + 1, dtype=np.int32)
+    np.cumsum(sizes, out=neighbor_ptr[1:])
+    neighbor_data = np.empty(int(neighbor_ptr[-1]), dtype=np.int32)
+    cursor = neighbor_ptr[:-1].copy()
+    for s in range(n):
+        cell = order[s]
+        if s > 0:
+            neighbor_data[cursor[cell]] = order[s - 1]
+            cursor[cell] += 1
+        if s < n - 1:
+            neighbor_data[cursor[cell]] = order[s + 1]
+            cursor[cell] += 1
+    return neighbor_data, neighbor_ptr
+
+
 def build_voronoi(
     snap: "Snapshot | None" = None,
-    X: str | ArrayLike = "X",
-    Y: str | ArrayLike = "Y",
-    Z: str | ArrayLike = "Z",
+    coords: tuple = ("X", "Y", "Z"),
 ) -> SimpleNamespace:
     """Build a Voronoi adjacency graph from snapshot cell centres. Suitable for
     small data (<1,000,000 cells).
@@ -147,51 +181,50 @@ def build_voronoi(
     Constructs the full Voronoi tessellation via
     :class:`scipy.spatial.Voronoi` and encodes the cell-neighbour relation as
     a Compressed Sparse Row (CSR) structure for efficient traversal in the
-    numba kernels.
+    numba kernels.  The dimensionality is set by ``len(coords)``: pass
+    ``coords=("X",)`` for 1D data (collinear cells, where scipy Voronoi fails -
+    an exact sorted-adjacency graph is used instead), ``("X","Y")`` for 2D, or
+    the default ``("X","Y","Z")`` for 3D.  Every downstream ``find_shock_*``
+    function reads ``ndim`` back from ``positions.shape[1]``.
 
-    :param snap: Loaded RICH snapshot providing ``X``, ``Y``, ``Z``
-                 coordinates.  Optional - pass ``None`` and supply ``X``,
-                 ``Y``, ``Z`` as array-likes directly.
-    :param X: Field name resolved against ``snap``, or an array-like of
-              x-coordinates when ``snap`` is ``None``.
-    :param Y: Field name resolved against ``snap``, or an array-like of
-              y-coordinates when ``snap`` is ``None``.
-    :param Z: Field name resolved against ``snap``, or an array-like of
-              z-coordinates when ``snap`` is ``None``.
+    :param snap: Loaded RICH snapshot providing the coordinate fields.
+                 Optional - pass ``None`` and supply arrays via ``coords``.
+    :param coords: Coordinate field names resolved against ``snap`` (or
+                   array-likes when ``snap`` is ``None``), one per spatial
+                   dimension.  Its length fixes ``ndim``.
     :returns: Namespace with attributes:
 
-              * ``positions`` - ``float64 (N, 3)`` cell centres in code_length.
+              * ``positions`` - ``float64 (N, ndim)`` cell centres in code_length.
               * ``neighbor_data`` - ``int32`` flat adjacency list (CSR values).
               * ``neighbor_ptr`` - ``int32`` CSR row-pointer array, length N+1.
     :rtype: :class:`types.SimpleNamespace`
     """
 
     if snap is not None:
-        X = snap._get_data(X).v
-        Y = snap._get_data(Y).v
-        Z = snap._get_data(Z).v
+        cols = [snap._get_data(c).v for c in coords]
     else:
-        X = np.asarray(X)
-        Y = np.asarray(Y)
-        Z = np.asarray(Z)
+        cols = [np.asarray(c) for c in coords]
 
-    positions = np.stack([X, Y, Z], axis=-1)
-
-    print(f"Building Voronoi for {len(positions):,} cells ...", flush=True)
-    vor = Voronoi(positions)
-
-    adj = defaultdict(list)
-    for i, j in vor.ridge_points:
-        adj[i].append(j)
-        adj[j].append(i)
-
+    positions = np.ascontiguousarray(np.stack(cols, axis=-1), dtype=np.float64)
     n = len(positions)
-    sizes = np.array([len(adj[k]) for k in range(n)], dtype=np.int32)
-    neighbor_ptr = np.zeros(n + 1, dtype=np.int32)
-    np.cumsum(sizes, out=neighbor_ptr[1:])
-    neighbor_data = np.array([j for k in range(n) for j in adj[k]], dtype=np.int32)
+    ndim = positions.shape[1]
 
-    print(f"Done.  Mean neighbours/cell: {sizes.mean():.1f}", flush=True)
+    print(f"Building Voronoi for {n:,} cells ({ndim}D) ...", flush=True)
+    if ndim == 1:
+        neighbor_data, neighbor_ptr = _adjacency_1d(positions[:, 0])
+    else:
+        vor = Voronoi(positions)
+        adj = defaultdict(list)
+        for i, j in vor.ridge_points:
+            adj[i].append(j)
+            adj[j].append(i)
+        sizes = np.array([len(adj[k]) for k in range(n)], dtype=np.int32)
+        neighbor_ptr = np.zeros(n + 1, dtype=np.int32)
+        np.cumsum(sizes, out=neighbor_ptr[1:])
+        neighbor_data = np.array([j for k in range(n) for j in adj[k]], dtype=np.int32)
+
+    mean_nb = len(neighbor_data) / n if n else 0.0
+    print(f"Done.  Mean neighbours/cell: {mean_nb:.1f}", flush=True)
     return SimpleNamespace(
         positions=positions,
         neighbor_data=neighbor_data,
@@ -201,9 +234,7 @@ def build_voronoi(
 
 def build_knn(
     snap: "Snapshot | None" = None,
-    X: str | ArrayLike = "X",
-    Y: str | ArrayLike = "Y",
-    Z: str | ArrayLike = "Z",
+    coords: tuple = ("X", "Y", "Z"),
     k: int = 48,
     cells: ArrayLike | None = None,
     workers: int = -1,
@@ -235,8 +266,10 @@ def build_knn(
     are never indexed).
 
     :param snap: Loaded RICH snapshot, or ``None`` to pass coordinates directly.
-    :param X: Field name resolved against ``snap``, or an array-like of
-              x-coordinates when ``snap`` is ``None``.  (``Y``, ``Z`` likewise.)
+    :param coords: Coordinate field names resolved against ``snap`` (or
+                   array-likes when ``snap`` is ``None``), one per spatial
+                   dimension; ``len(coords)`` fixes ``ndim``.  ``cKDTree`` works
+                   in any dimension, so 1D/2D/3D are all supported.
     :param k: Number of nearest neighbours per cell.  Must exceed the local
               Voronoi face degree to match the exact traversal (mean ≈ 15;
               ``48`` matched exact Voronoi on >99.7% of test queries).
@@ -253,15 +286,11 @@ def build_knn(
     """
 
     if snap is not None:
-        X = snap._get_data(X).v
-        Y = snap._get_data(Y).v
-        Z = snap._get_data(Z).v
+        cols = [snap._get_data(c).v for c in coords]
     else:
-        X = np.asarray(X)
-        Y = np.asarray(Y)
-        Z = np.asarray(Z)
+        cols = [np.asarray(c) for c in coords]
 
-    positions = np.ascontiguousarray(np.stack([X, Y, Z], axis=-1), dtype=np.float64)
+    positions = np.ascontiguousarray(np.stack(cols, axis=-1), dtype=np.float64)
     n = len(positions)
 
     if cells is None:
@@ -322,46 +351,47 @@ def _next_cell(
     neighbor_data: NDArray[np.integer],
     neighbor_ptr: NDArray[np.integer],
     idx: int,
-    dx: float,
-    dy: float,
-    dz: float,
+    d: NDArray[np.float64],
+    sign: float,
 ) -> int:
     """JIT kernel: find the next Voronoi cell along a ray (Springel 2010 §2).
 
     The perpendicular-bisector face between generators xᵢ and xⱼ has normal
-    **n** = xⱼ - xᵢ.  A ray from xᵢ in direction **d̂** crosses it at
+    **n** = xⱼ - xᵢ.  A ray from xᵢ in direction ``sign * d`` crosses it at
     t = |**n**|² / (2 **n**·**d̂**).  Returns the neighbour with the smallest
-    positive *t*, or ``-1`` at a domain boundary.
+    positive *t*, or ``-1`` at a domain boundary.  Dimension-agnostic: works for
+    any ``ndim = positions.shape[1]`` (1D/2D/3D) via the inner axis loop.
 
-    :param positions: Cell centre coordinates, shape ``(N, 3)``.
+    :param positions: Cell centre coordinates, shape ``(N, ndim)``.
     :param neighbor_data: CSR flat adjacency array.
     :param neighbor_ptr: CSR row-pointer array, length N+1.
     :param idx: Index of the current cell.
-    :param dx: x-component of the ray direction (need not be normalised).
-    :param dy: y-component.
-    :param dz: z-component.
+    :param d: Ray direction, shape ``(ndim,)`` (need not be normalised).
+    :param sign: ``+1.0`` to trace along ``d``, ``-1.0`` to trace against it.
     :returns: Global index of the neighbouring cell the ray enters, or ``-1``.
     :rtype: int
     """
-    xi = positions[idx, 0]
-    yi = positions[idx, 1]
-    zi = positions[idx, 2]
-    norm = _math.sqrt(dx * dx + dy * dy + dz * dz)
+    ndim = positions.shape[1]
+    norm = 0.0
+    for a in range(ndim):
+        norm += d[a] * d[a]
     if norm == 0.0:
         return -1
-    dx /= norm
-    dy /= norm
-    dz /= norm
+    # Scaling **d** by any positive factor rescales every candidate's *t*
+    # equally, so the arg-min neighbour is unchanged; we skip normalisation and
+    # only fold in the sign.
     best_t, best_j = _math.inf, -1
     for k in range(neighbor_ptr[idx], neighbor_ptr[idx + 1]):
         j = neighbor_data[k]
-        nx = positions[j, 0] - xi
-        ny = positions[j, 1] - yi
-        nz = positions[j, 2] - zi
-        nd = nx * dx + ny * dy + nz * dz
+        nd = 0.0
+        nn = 0.0
+        for a in range(ndim):
+            na = positions[j, a] - positions[idx, a]
+            nd += na * sign * d[a]
+            nn += na * na
         if nd <= 0.0:
             continue
-        t = (nx * nx + ny * ny + nz * nz) / (2.0 * nd)
+        t = nn / (2.0 * nd)
         if t < best_t:
             best_t = t
             best_j = j
@@ -400,16 +430,19 @@ def _condition3_kernel(
     :returns: Boolean array of length *M*; ``True`` for confirmed shock cells.
     :rtype: :class:`numpy.ndarray` (bool)
     """
+    ndim = positions.shape[1]
     result = np.zeros(len(candidates), dtype=np.bool_)
     for k in prange(len(candidates)):  # each result[k] write is independent
         idx = candidates[k]
-        dx = ds_np[k, 0]
-        dy = ds_np[k, 1]
-        dz = ds_np[k, 2]
-        if dx == 0.0 and dy == 0.0 and dz == 0.0:
+        is_zero = True
+        for a in range(ndim):
+            if ds_np[k, a] != 0.0:
+                is_zero = False
+                break
+        if is_zero:
             continue
-        i_pre = _next_cell(positions, neighbor_data, neighbor_ptr, idx, dx, dy, dz)
-        i_post = _next_cell(positions, neighbor_data, neighbor_ptr, idx, -dx, -dy, -dz)
+        i_pre = _next_cell(positions, neighbor_data, neighbor_ptr, idx, ds_np[k], 1.0)
+        i_post = _next_cell(positions, neighbor_data, neighbor_ptr, idx, ds_np[k], -1.0)
         if i_pre < 0 or i_post < 0:
             continue
         T_pre = T_np[i_pre]
@@ -457,20 +490,22 @@ def _ray_tracer(
     :returns: Global cell index of the first non-shock cell found, or ``-1``.
     :rtype: int
     """
+    ndim = positions.shape[1]
     current = idx_shock[idx_cell]
-    dx = sign * ds_shock[idx_cell, 0]
-    dy = sign * ds_shock[idx_cell, 1]
-    dz = sign * ds_shock[idx_cell, 2]
-    norm = _math.sqrt(dx * dx + dy * dy + dz * dz)
+    d = np.empty(ndim, np.float64)
+    norm = 0.0
+    for a in range(ndim):
+        d[a] = sign * ds_shock[idx_cell, a]
+        norm += d[a] * d[a]
+    norm = _math.sqrt(norm)
     if norm == 0.0:
         return -1
-    dx /= norm
-    dy /= norm
-    dz /= norm
+    for a in range(ndim):
+        d[a] /= norm
     divV_curr = divV_shock[idx_cell]
 
     for _ in range(max_steps):
-        nxt = _next_cell(positions, neighbor_data, neighbor_ptr, current, dx, dy, dz)
+        nxt = _next_cell(positions, neighbor_data, neighbor_ptr, current, d, 1.0)
         if nxt < 0:
             return -1
         if not shock_mask[nxt]:
@@ -481,7 +516,10 @@ def _ray_tracer(
             divV_nxt = divV_shock[pos]
             if divV_nxt < divV_curr:
                 return -1  # unphysical divergence
-            if dx * ds_shock[pos, 0] + dy * ds_shock[pos, 1] + dz * ds_shock[pos, 2] < 0.0:
+            dot = 0.0
+            for a in range(ndim):
+                dot += d[a] * ds_shock[pos, a]
+            if dot < 0.0:
                 return nxt  # shock direction reversed
             divV_curr = divV_nxt
         current = nxt
@@ -548,8 +586,14 @@ def _shock_surface_kernel(
     pre_buf = np.empty(n, np.int64)
     post_buf = np.empty(n, np.int64)
 
+    ndim = positions.shape[1]
     for i in prange(n):
-        if ds_shock[i, 0] == 0.0 and ds_shock[i, 1] == 0.0 and ds_shock[i, 2] == 0.0:
+        is_zero = True
+        for a in range(ndim):
+            if ds_shock[i, a] != 0.0:
+                is_zero = False
+                break
+        if is_zero:
             continue
 
         post = _ray_tracer(
@@ -651,18 +695,21 @@ def _condition3_kernel_chunk(
     :returns: Boolean array of length ``k_end - k_start``.
     :rtype: :class:`numpy.ndarray` (bool)
     """
+    ndim = positions.shape[1]
     chunk = k_end - k_start
     result = np.zeros(chunk, dtype=np.bool_)
     for kk in range(chunk):
         k = k_start + kk
         idx = candidates[k]
-        dx = ds_np[k, 0]
-        dy = ds_np[k, 1]
-        dz = ds_np[k, 2]
-        if dx == 0.0 and dy == 0.0 and dz == 0.0:
+        is_zero = True
+        for a in range(ndim):
+            if ds_np[k, a] != 0.0:
+                is_zero = False
+                break
+        if is_zero:
             continue
-        i_pre = _next_cell(positions, neighbor_data, neighbor_ptr, idx, dx, dy, dz)
-        i_post = _next_cell(positions, neighbor_data, neighbor_ptr, idx, -dx, -dy, -dz)
+        i_pre = _next_cell(positions, neighbor_data, neighbor_ptr, idx, ds_np[k], 1.0)
+        i_post = _next_cell(positions, neighbor_data, neighbor_ptr, idx, ds_np[k], -1.0)
         if i_pre < 0 or i_post < 0:
             continue
         T_pre = T_np[i_pre]
@@ -719,10 +766,16 @@ def _shock_surface_kernel_chunk(
     i_surf = np.empty(chunk, np.int64)
     i_pre = np.empty(chunk, np.int64)
     i_post = np.empty(chunk, np.int64)
+    ndim = positions.shape[1]
     count = 0
     for ii in range(chunk):
         i = i_start + ii
-        if ds_shock[i, 0] == 0.0 and ds_shock[i, 1] == 0.0 and ds_shock[i, 2] == 0.0:
+        is_zero = True
+        for a in range(ndim):
+            if ds_shock[i, a] != 0.0:
+                is_zero = False
+                break
+        if is_zero:
             continue
         post = _ray_tracer(
             positions,
@@ -777,7 +830,40 @@ def _shock_surface_kernel_chunk(
 # ---------------------------------------------------------------------------- #
 
 
-def shock_candidates(snap: "Snapshot", gamma: float = 5 / 3) -> SimpleNamespace:
+# Cartesian gradient field names, ordered by axis.  The first ``ndim`` of each
+# are stacked to form the pressure / density gradients for an ndim run.
+_GRAD_P_FIELDS = ("DpDx", "DpDy", "DpDz")
+_GRAD_RHO_FIELDS = ("DrhoDx", "DrhoDy", "DrhoDz")
+
+
+def _shock_direction(
+    snap: "Snapshot", ndim: int
+) -> tuple[NDArray[np.float64], NDArray[np.float64], NDArray[np.float64]]:
+    """Pressure/temperature gradients and unit shock direction for an ndim run.
+
+    Stacks the first *ndim* Cartesian gradient components, forms the temperature
+    gradient ∇T ∝ ∇P/ρ - P∇ρ/ρ², and the unit shock direction −∇T/|∇T| (zero
+    where |∇T| = 0).  Shared by :func:`shock_candidates`,
+    :func:`find_shock_surface` and their threaded variants so the dimensionality
+    logic lives in one place.
+
+    :param snap: Loaded RICH snapshot providing ``P``, ``rho`` and the gradient
+                 fields ``DpD*`` / ``DrhoD*``.
+    :param ndim: Number of spatial dimensions (1, 2 or 3).
+    :returns: ``(grad_P, grad_T, ds)``; the vector arrays have shape ``(N, ndim)``.
+    :rtype: tuple
+    """
+    P_v = snap.P.v
+    rho_v = snap.rho.v
+    grad_P = np.stack([snap._get_data(f).v for f in _GRAD_P_FIELDS[:ndim]], axis=-1)
+    grad_rho = np.stack([snap._get_data(f).v for f in _GRAD_RHO_FIELDS[:ndim]], axis=-1)
+    grad_T = (grad_P.T / rho_v - P_v * grad_rho.T / rho_v**2).T
+    norm_gT = np.linalg.norm(grad_T, axis=-1, keepdims=True)
+    ds = np.where(norm_gT > 0, -grad_T / norm_gT, 0.0)
+    return grad_P, grad_T, ds
+
+
+def shock_candidates(snap: "Snapshot", gamma: float = 5 / 3, ndim: int = 3) -> SimpleNamespace:
     """Compute shock-zone *candidate* cells (Schaal+14 conditions 1 & 2).
 
     Conditions 1 (∇·v < 0) and 2 (∇T·∇P > 0) are cheap, purely local cuts.
@@ -792,10 +878,13 @@ def shock_candidates(snap: "Snapshot", gamma: float = 5 / 3) -> SimpleNamespace:
                  pressure/density gradient fields.
     :param gamma: Adiabatic index.  Accepted for signature parity with the
                   ``find_shock_*`` functions; not used by conditions 1 & 2.
+    :param ndim: Number of spatial dimensions (1, 2 or 3); selects how many
+                 Cartesian gradient components are stacked.  Normally supplied by
+                 :func:`find_shock_zone` from ``vor.positions.shape[1]``.
     :returns: Namespace with attributes:
 
               * ``candidates`` - ``int64 (M,)`` global indices passing 1 & 2.
-              * ``ds`` - ``float64 (N, 3)`` shock direction −∇T/|∇T| (zero where
+              * ``ds`` - ``float64 (N, ndim)`` shock direction −∇T/|∇T| (zero where
                 |∇T| = 0), reused by :func:`find_shock_zone` to avoid a second
                 gradient pass.
     :rtype: :class:`types.SimpleNamespace`
@@ -803,19 +892,12 @@ def shock_candidates(snap: "Snapshot", gamma: float = 5 / 3) -> SimpleNamespace:
     # Condition 1 - converging flow
     cond1 = snap.divV.v < 0
 
-    # Temperature gradient  ∇T ∝ ∇P/rho - P ∇ρ/ρ²
-    P_v = snap.P.v
-    rho_v = snap.rho.v
-    grad_P = np.stack([snap.DpDx.v, snap.DpDy.v, snap.DpDz.v], axis=-1)
-    grad_rho = np.stack([snap.DrhoDx.v, snap.DrhoDy.v, snap.DrhoDz.v], axis=-1)
-    grad_T = (grad_P.T / rho_v - P_v * grad_rho.T / rho_v**2).T
+    # Temperature gradient  ∇T ∝ ∇P/rho - P ∇ρ/ρ²  and shock direction −∇T/|∇T|
+    # (the ds field points from post-shock → pre-shock).
+    grad_P, grad_T, ds = _shock_direction(snap, ndim)
 
     # Condition 2 - temperature gradient aligned with pressure gradient
     cond2 = np.einsum("ij,ij->i", grad_T, grad_P) > 0
-
-    # Shock direction: −∇T / |∇T|  (points from post-shock → pre-shock)
-    norm_gT = np.linalg.norm(grad_T, axis=-1, keepdims=True)
-    ds = np.where(norm_gT > 0, -grad_T / norm_gT, 0.0)
 
     candidates = np.ascontiguousarray(np.where(cond1 & cond2)[0], dtype=np.int64)
     return SimpleNamespace(candidates=candidates, ds=ds)
@@ -836,15 +918,53 @@ def find_shock_zone(
       (evaluated by :func:`_condition3_kernel`; thresholds log₁₀ΔT ≥ 0.11,
       log₁₀ΔP ≥ 0.27).
 
-    :param snap: Loaded RICH snapshot.  Must provide ``DrhoDx``, ``DrhoDy``,
-                 ``DrhoDz`` for the temperature-gradient calculation.
-    :param vor: Voronoi graph from :func:`build_voronoi`.
+    ``vor`` may come from either :func:`build_voronoi` (exact Voronoi neighbours,
+    practical up to ~1e6 cells) or :func:`build_knn` (k-nearest neighbours,
+    scaling to ~1e8 cells).  Both return the same
+    ``(positions, neighbor_data, neighbor_ptr)`` namespace, so :func:`build_knn`
+    is a drop-in for :func:`build_voronoi` here.  The spatial dimension is read
+    back from ``vor.positions.shape[1]``, so the same call handles 1D, 2D and 3D.
+
+    **Example**
+
+    ```python
+    import richio as rio
+    from richio.shockfinder import build_voronoi, find_shock_zone, find_shock_surface
+
+    snap = rio.load("snap_0100.h5")
+    vor  = build_voronoi(snap)                  # 3D; pass coords=("X",) for 1D
+    zone = find_shock_zone(snap, vor)           # bool (N,), True inside a shock
+    surf = find_shock_surface(snap, vor, zone)
+    ```
+
+    On large snapshots, prescreen with :func:`shock_candidates` (the two cheap
+    local conditions) and build only the neighbour rows that survive, then use
+    :func:`build_knn`:
+
+    ```python
+    from richio.shockfinder import shock_candidates, build_knn
+
+    cand = shock_candidates(snap)               # ~1/4 of cells pass 1 & 2
+    vor  = build_knn(snap, cells=cand.candidates, k=48)
+    zone = find_shock_zone(snap, vor)           # same result, roughly 4x faster
+    ```
+
+    :param snap: Loaded RICH snapshot providing ``divV``, ``P``, ``rho`` and the
+                 pressure/density gradient fields (``DpD*``/``DrhoD*``, one
+                 component per spatial dimension).
+    :param vor: Neighbour graph from :func:`build_voronoi` or :func:`build_knn`.
     :param gamma: Adiabatic index.  Defaults to 5/3.
+    :param mach_min: Weakest shock to keep, as a Mach number.  Sets the
+                     condition-3 jump thresholds through the Rankine-Hugoniot
+                     relations (``mach_min=1.3`` gives log₁₀ΔT ≥ 0.11,
+                     log₁₀ΔP ≥ 0.27).  Defaults to 1.3.
     :returns: Boolean array of shape ``(N,)``; ``True`` for shock-zone cells.
     :rtype: :class:`numpy.ndarray` (bool)
     """
-    # Conditions 1 & 2 (and the shock direction ds) - shared helper
-    cand = shock_candidates(snap, gamma)
+    # Conditions 1 & 2 (and the shock direction ds) - shared helper.
+    # ndim flows from the graph, so 1D/2D/3D all use this same path.
+    ndim = vor.positions.shape[1]
+    cand = shock_candidates(snap, gamma, ndim)
     candidates = cand.candidates
 
     # Condition 3 - Voronoi/k-NN + numba
@@ -892,9 +1012,26 @@ def find_shock_surface(
     zone, then computes three independent Rankine-Hugoniot Mach-number estimates
     from the T, P, and rho jumps between the pre- and post-shock cells.
 
+    Pass the same ``vor`` you gave :func:`find_shock_zone` (from either
+    :func:`build_voronoi` or :func:`build_knn`); the spatial dimension is taken
+    from ``vor.positions.shape[1]``, so 1D/2D/3D all work unchanged.
+
+    **Example**
+
+    ```python
+    vor  = build_voronoi(snap)                  # or build_knn(snap, cells=...)
+    zone = find_shock_zone(snap, vor)
+    surf = find_shock_surface(snap, vor, zone)
+
+    import numpy as np
+    print(surf.surface_mask.sum(), "surface cells")
+    print("median Mach (from T):", np.median(surf.mach_T))
+    ```
+
     :param snap: Loaded RICH snapshot providing ``P``, ``rho``, ``divV``, and
                  gradient fields.
-    :param vor: Voronoi graph from :func:`build_voronoi`.
+    :param vor: Neighbour graph from :func:`build_voronoi` or :func:`build_knn`
+                (the same one passed to :func:`find_shock_zone`).
     :param shock_zone: Boolean shock-zone mask from :func:`find_shock_zone`,
                        shape ``(N,)``.
     :param gamma: Adiabatic index.  Defaults to 5/3.
@@ -910,12 +1047,8 @@ def find_shock_surface(
     """
     P_v = snap.P.v
     rho_v = snap.rho.v
-    grad_P = np.stack([snap.DpDx.v, snap.DpDy.v, snap.DpDz.v], axis=-1)
-    grad_rho = np.stack([snap.DrhoDx.v, snap.DrhoDy.v, snap.DrhoDz.v], axis=-1)
-    grad_T = (grad_P.T / rho_v - P_v * grad_rho.T / rho_v**2).T
-
-    norm_gT = np.linalg.norm(grad_T, axis=-1, keepdims=True)
-    ds = np.where(norm_gT > 0, -grad_T / norm_gT, 0.0)
+    ndim = vor.positions.shape[1]
+    _, _, ds = _shock_direction(snap, ndim)
 
     T_np = np.ascontiguousarray(P_v / rho_v, dtype=np.float64)
     P_np = np.ascontiguousarray(P_v, dtype=np.float64)
@@ -973,6 +1106,9 @@ def find_shock_zone_threaded(
 ) -> NDArray[np.bool_]:
     """Thread-pool parallel version of :func:`find_shock_zone`.
 
+    Same inputs, result, and ``build_voronoi``/``build_knn``/``shock_candidates``
+    usage as :func:`find_shock_zone`; see its examples.
+
     Dispatches condition-3 evaluation across ``n_workers`` OS threads using
     :class:`~concurrent.futures.ThreadPoolExecutor`.  Because numba releases
     the GIL inside ``@njit`` functions the threads run compiled code in true
@@ -991,7 +1127,8 @@ def find_shock_zone_threaded(
     if n_workers is None:
         n_workers = os.cpu_count()
 
-    cand = shock_candidates(snap, gamma)
+    ndim = vor.positions.shape[1]
+    cand = shock_candidates(snap, gamma, ndim)
     candidates = cand.candidates
 
     P_v = snap.P.v
@@ -1041,6 +1178,8 @@ def find_shock_surface_threaded(
 ) -> SimpleNamespace:
     """Thread-pool parallel version of :func:`find_shock_surface`.
 
+    Same inputs and result as :func:`find_shock_surface`; see its example.
+
     Splits the shock-zone cell list into ``n_workers`` contiguous chunks and
     dispatches each to a thread running :func:`_shock_surface_kernel_chunk`.
     Numba's GIL release means the ray-tracing runs in true parallel; all
@@ -1059,11 +1198,8 @@ def find_shock_surface_threaded(
 
     P_v = snap.P.v
     rho_v = snap.rho.v
-    grad_P = np.stack([snap.DpDx.v, snap.DpDy.v, snap.DpDz.v], axis=-1)
-    grad_rho = np.stack([snap.DrhoDx.v, snap.DrhoDy.v, snap.DrhoDz.v], axis=-1)
-    grad_T = (grad_P.T / rho_v - P_v * grad_rho.T / rho_v**2).T
-    norm_gT = np.linalg.norm(grad_T, axis=-1, keepdims=True)
-    ds = np.where(norm_gT > 0, -grad_T / norm_gT, 0.0)
+    ndim = vor.positions.shape[1]
+    _, _, ds = _shock_direction(snap, ndim)
 
     T_np = np.ascontiguousarray(P_v / rho_v, dtype=np.float64)
     P_np = np.ascontiguousarray(P_v, dtype=np.float64)

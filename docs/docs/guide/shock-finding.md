@@ -52,6 +52,26 @@ from richio.shockfinder import build_knn
 vor = build_knn(snap)                        # for large snapshots
 ```
 
+### 1D and 2D snapshots
+
+Both builders assume a 3D run and read the `X`, `Y` and `Z` coordinates. If your
+snapshot is 1D or 2D, tell them which coordinates to use with `coords`, and the
+rest of the pipeline follows without any further changes:
+
+```python
+vor  = build_voronoi(snap, coords=("X",))        # 1D
+vor  = build_voronoi(snap, coords=("X", "Y"))    # 2D
+zone = find_shock_zone(snap, vor)                # unchanged
+surf = find_shock_surface(snap, vor, zone)       # unchanged
+```
+
+`find_shock_zone` and `find_shock_surface` read the number of dimensions back
+from the graph, so you set it once, here, and never repeat it. A 1D run is a
+special case: the cells sit on a line, which a Voronoi tessellation cannot
+handle, so `build_voronoi` links each cell to the ones immediately to its left
+and right instead. `build_knn` takes the same `coords` and works in any
+dimension.
+
 ### Only build neighbours where it matters
 
 Most cells obviously aren't in a shock, since the gas there is not being squeezed,
