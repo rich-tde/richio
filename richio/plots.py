@@ -345,13 +345,16 @@ def scalar_map(
     dmin = float(np.min(finite))
     dmax = float(np.max(finite))
     # When log_scale enabled, round out to the nearest half-integer, use the
-    # exact data range when whole data range is below 3 orders of magnitude.
+    # exact data range when whole data range is below 3 orders of magnitude,
+    # and keep only the top 6 decades when it spans more than 6
     if log_scale is True:
         if dmax - dmin < 3:
             vmin_default, vmax_default = dmin, dmax
         else:
             vmin_default = np.floor(dmin * 2.0) / 2.0
             vmax_default = np.ceil(dmax * 2.0) / 2.0
+            if vmax_default - vmin_default > 6:
+                vmin_default = vmax_default - 6
         if "vmin" not in kw:
             kw["vmin"] = vmin_default
         if "vmax" not in kw:

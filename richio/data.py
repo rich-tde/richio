@@ -989,9 +989,13 @@ class SnapshotH5(Snapshot):
         with h5py.File(self.path, "r") as f:
             try:
                 arr = np.concatenate([f[f"rank{i}/{field}"] for i in range(self.rank)])
-                arr *= units.get_unit(field)
             except KeyError:  # If field is not under rank, try on the root order
-                arr = f[field][()] * units.get_unit(field)
+                arr = f[field][()]
+            try: 
+                arr *= units.get_unit(field)
+            except ValueError:
+                warnings.warn(f"Field {field} not recognized. Passing without unit.")
+                pass
 
         if np.ndim(arr) == 0:
             return arr
@@ -1145,12 +1149,16 @@ class SnapshotNPY(Snapshot):
                     f"File {filename} is not found. Key '{key}' does not exist."
                 )
 
-        if idx == slice(None):  # do not slice if no index indicated
-            return arr * units.get_unit(
-                field
-            )  # slice[idx] works generally so long as arr is not 0-dimensional
-        else:  # which is the case for snap.time
-            return arr[idx] * units.get_unit(field)
+        if idx != slice(None):
+            arr = arr[idx]
+
+        try: 
+            arr *= units.get_unit(field)
+        except ValueError:
+            warnings.warn(f"Field {field} not recognized. Passing without unit.")
+            pass
+
+        return arr
 
     def __len__(self) -> int:
         """Return the number of cells by reading the length of the first field.
