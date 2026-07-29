@@ -79,6 +79,7 @@ nav:
       - Selecting regions: guide/selecting-regions.md
       - Slices and projections: guide/slices-and-projections.md
       - Plotting: guide/plotting.md
+      - Opacity: guide/opacity.md
       - Volume rendering (optional): guide/volume-rendering.md
       - Shock finding (optional): guide/shock-finding.md
   - API reference:
@@ -86,6 +87,7 @@ nav:
       - richio.units: api/units.md
       - richio.config: api/config.md
       - richio.plots: api/plots.md
+      - richio.opacity: api/opacity.md
       - richio.render: api/render.md
       - richio.shockfinder: api/shockfinder.md
   - About:

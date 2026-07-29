@@ -18,7 +18,7 @@ richio — I/O and analysis library for RICH TDE simulations.
 
 The top-level namespace re-exports everything from :mod:`richio.data` (the
 primary entry-point is :func:`richio.load`) and exposes the
-:mod:`richio.plots` and :mod:`richio.units` sub-modules.
+:mod:`richio.plots`, :mod:`richio.units` and :mod:`richio.opacity` sub-modules.
 
 Typical usage::
 
@@ -26,10 +26,14 @@ Typical usage::
     snap = richio.load("snap_0042.h5")
     snap.density.to("g/cm**3")
     snap.plots.slice(data="density", res=512)
+
+    alpha = richio.opacity.rosseland_alpha(snap.T, snap.rho)
+    snap.plots.slice(data=alpha, res=512)
 """
 
 from richio import (
     config,  # noqa: F401
+    opacity,  # noqa: F401
     plots,
     units,
 )
