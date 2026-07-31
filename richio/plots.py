@@ -99,6 +99,7 @@ class SnapshotPlotter:
         cmap: str | Colormap = "twilight",
         label_latex: str = "",
         unit_latex: str | None = None,
+        colorbar_label: str | None = None,
         aspect_equal: bool = True,
         log_scale: bool = True,
         **kwargs,
@@ -133,6 +134,8 @@ class SnapshotPlotter:
                             Defaults to ``r'\\rho'``.
         :param unit_latex: LaTeX unit string for the colorbar.  Auto-read from
                            the data when ``None``.
+        :param colorbar_label: Customize colorbar label that overwrites
+                               label_latex and unit_latex.
         :param aspect_equal: Set equal aspect ratio on the axes.
                              Defaults to ``True``.
         :param log_scale: Plot ``log₁₀`` of the data and label the colorbar
@@ -168,6 +171,7 @@ class SnapshotPlotter:
             cmap=cmap,
             label_latex=label_latex,
             unit_latex=unit_latex,
+            colorbar_label=colorbar_label,
             aspect_equal=aspect_equal,
             log_scale=log_scale,
             **kwargs,
@@ -190,6 +194,7 @@ class SnapshotPlotter:
         cmap: str | Colormap = "twilight",
         label_latex: str = "",  # TODO: make them automatic from data name
         unit_latex: str | None = None,
+        colorbar_label: str | None = None,
         aspect_equal: bool = True,
         log_scale: bool = True,
         **kwargs,
@@ -218,6 +223,8 @@ class SnapshotPlotter:
                             Defaults to ``r'\\Sigma'``.
         :param unit_latex: LaTeX unit string for colorbar.  Auto-read when
                            ``None``.
+        :param colorbar_label: Customize colorbar label that overwrites
+                               label_latex and unit_latex.
         :param aspect_equal: Set equal aspect ratio. Defaults to ``True``.
         :param log_scale: Set logarithmic scale. Defaults to ``True''.
         :param kwargs: Extra keyword arguments forwarded to
@@ -245,6 +252,7 @@ class SnapshotPlotter:
             cmap=cmap,
             label_latex=label_latex,
             unit_latex=unit_latex,
+            colorbar_label=colorbar_label,
             aspect_equal=aspect_equal,
             log_scale=log_scale,
             **kwargs,
@@ -297,6 +305,7 @@ def scalar_map(
     cmap: str | Colormap = "twilight",
     label_latex: str = "",
     unit_latex: str | None = None,
+    colorbar_label: str | None = None,
     aspect_equal: bool = True,
     log_scale: bool = True,
     **kwargs,
@@ -316,6 +325,8 @@ def scalar_map(
     :param label_latex: LaTeX symbol for the colorbar (e.g. ``r'\\Sigma'``).
     :param unit_latex: LaTeX unit string.  Auto-read from ``f.units`` when
                        ``None``.
+    :param colorbar_label: Customize colorbar label that overwrites label_latex
+                           and unit_latex.
     :param aspect_equal: Set equal aspect ratio on the axes.
                          Defaults to ``True``.
     :param kwargs: Additional keyword arguments forwarded to
@@ -330,9 +341,6 @@ def scalar_map(
     # ensure we have an Axes
     if ax is None:
         fig, ax = plt.subplots()
-
-    if unit_latex is None:  # read the unit from data if not specified
-        unit_latex = f.units.latex_repr  # TODO: check dimensionality and raise warning
 
     # compute log-space data and choose sensible defaults for vmin/vmax
     if log_scale is True:
@@ -365,10 +373,17 @@ def scalar_map(
         xgrid, ygrid, f, cmap=cmap, **kw
     )  # return im as well in case you want to customise colorbar
 
-    if log_scale:
-        colorbar_label = f"$\\log[{label_latex}/{unit_latex}]$"
-    else:
-        colorbar_label = f"${label_latex}/{unit_latex}$"
+    if colorbar_label is not None:
+        if unit_latex is None:  # read the unit from data if not specified
+            unit_latex = f.units.latex_repr  # TODO: check dimensionality and raise warning
+        if unit_latex != "":
+            unit_latex = "/" + unit_latex
+
+        if log_scale:
+            colorbar_label = f"$\\log[{label_latex}{unit_latex}]$"
+        else:
+            colorbar_label = f"${label_latex}{unit_latex}$"
+
     plt.colorbar(im, ax=ax, label=colorbar_label)
 
     if aspect_equal:
