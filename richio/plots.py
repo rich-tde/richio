@@ -373,9 +373,12 @@ def scalar_map(
         xgrid, ygrid, f, cmap=cmap, **kw
     )  # return im as well in case you want to customise colorbar
 
-    if colorbar_label is not None:
+    if colorbar_label is None:
         if unit_latex is None:  # read the unit from data if not specified
-            unit_latex = f.units.latex_repr  # TODO: check dimensionality and raise warning
+            try:
+                unit_latex = f.units.latex_repr
+            except AttributeError:
+                unit_latex = ""
         if unit_latex != "":
             unit_latex = "/" + unit_latex
 
