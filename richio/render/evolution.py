@@ -100,8 +100,17 @@ def _snapshot_days(snap, path, days_per_tfb):
 
 
 def _evolution_label(snap, path, days_per_tfb):
-    """Two-line frame label: time in days (top) and snapshot number."""
+    """Frame label: time in fallback times, time in days, and snapshot number.
+
+    ``t_fb`` comes first because it is the physically meaningful clock for a TDE
+    (and the only one every snapshot carries — NPY snapshots store no time, so the
+    days line needs *days_per_tfb* from :func:`_calibrate_days_per_tfb`).  A line
+    whose value is unavailable is simply dropped.
+    """
     parts = []
+    tfb = _read_tfb(path, getattr(snap, "snapnum", -1))
+    if tfb is not None:
+        parts.append(rf"$t = {tfb:.2f}\,t_{{\rm fb}}$")
     d = _snapshot_days(snap, path, days_per_tfb)
     if d is not None:
         parts.append(f"t = {d:.2f} d")
