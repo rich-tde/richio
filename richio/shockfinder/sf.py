@@ -1038,8 +1038,15 @@ def find_shock_surface(
     :returns: Namespace with attributes:
 
               * ``surface_mask`` - ``bool (N,)`` global mask for shock-surface cells.
-              * ``pre_mask``     - ``bool (N,)`` mask for pre-shock cells.
-              * ``post_mask``    - ``bool (N,)`` mask for post-shock cells.
+              * ``pre_mask``     - ``bool (N,)`` deduplicated set of pre-shock cells.
+              * ``post_mask``    - ``bool (N,)`` deduplicated set of post-shock cells.
+              * ``surf_idx``     - ``int (M,)`` global surface-cell index per shock,
+                aligned with the Mach arrays (equals ``np.where(surface_mask)[0]``).
+              * ``pre_idx``      - ``int (M,)`` global pre-shock cell index per shock,
+                aligned with the Mach arrays. Several shocks may share one upstream
+                cell, so ``pre_mask`` is the deduplication of this array.
+              * ``post_idx``     - ``int (M,)`` global post-shock cell index per shock,
+                aligned with the Mach arrays; ``post_mask`` is its deduplication.
               * ``mach_T``       - ``float (M,)`` Mach number from temperature jump.
               * ``mach_P``       - ``float (M,)`` Mach number from pressure jump.
               * ``mach_rho``     - ``float (M,)`` Mach number from density jump.
@@ -1086,6 +1093,9 @@ def find_shock_surface(
         surface_mask=surface_mask,
         pre_mask=pre_mask,
         post_mask=post_mask,
+        surf_idx=idx_shock[i_surf],  # global surface-cell index, aligned with mach_*
+        pre_idx=i_pre,  # global pre-shock cell index per surface cell
+        post_idx=i_post,  # global post-shock cell index per surface cell
         mach_T=M_T,
         mach_P=M_P,
         mach_rho=M_rho,
@@ -1252,6 +1262,9 @@ def find_shock_surface_threaded(
         surface_mask=surface_mask,
         pre_mask=pre_mask,
         post_mask=post_mask,
+        surf_idx=idx_shock[i_surf_all],  # global surface-cell index, aligned with mach_*
+        pre_idx=i_pre_all,  # global pre-shock cell index per surface cell
+        post_idx=i_post_all,  # global post-shock cell index per surface cell
         mach_T=M_T_all,
         mach_P=M_P_all,
         mach_rho=M_rho_all,
