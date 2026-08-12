@@ -39,7 +39,11 @@ def _build_h5_aliases():
     :returns: Mapping from canonical HDF5 key to its list of aliases.
     :rtype: dict[str, list[str]]
     """
-    return {k: v["aliases"] for k, v in FIELD_REGISTRY.items() if not v.get("npy_only", False)}
+    return {
+        k: v["aliases"]
+        for k, v in FIELD_REGISTRY.items()
+        if not v.get("npy_only", False)
+    }
 
 
 def _build_npy_aliases():
@@ -76,7 +80,8 @@ def load(path):
         snap = richio.load("snap_0042.h5")
         snap = richio.load("/run/snap_0042/")
     """
-    if os.path.isfile(path) and (path.endswith("h5") or path.endswith("hdf5")):  # if hdf5 file
+    path = str(path)
+    if os.path.isfile(path) and (path.endswith(("h5", "hdf5"))):  # if hdf5 file
         with h5py.File(path) as f:
             pass
         return SnapshotH5(path)
@@ -376,7 +381,9 @@ class Snapshot:
         :rtype: tuple[:class:`unyt.unyt_array`, :class:`unyt.unyt_array`,
                       :class:`unyt.unyt_array`]
         """
-        i, xspace, yspace, zspace = self.to_3dgrid(res, X, Y, Z, box_size, selection, plane=plane)
+        i, xspace, yspace, zspace = self.to_3dgrid(
+            res, X, Y, Z, box_size, selection, plane=plane
+        )
 
         data = self._get_data(data)
         grid_data = data[i]
@@ -488,7 +495,9 @@ class Snapshot:
 
         xs = np.asarray(xspace, dtype="float64")
         yy, zz = np.meshgrid(
-            np.asarray(yspace, dtype="float64"), np.asarray(zspace, dtype="float64"), indexing="ij"
+            np.asarray(yspace, dtype="float64"),
+            np.asarray(zspace, dtype="float64"),
+            indexing="ij",
         )
         yz = np.column_stack([yy.ravel(), zz.ravel()])  # (ny*nz, 2)
         del yy, zz
@@ -691,6 +700,8 @@ class Snapshot:
         X: str = "X",
         Y: str = "Y",
         Z: str = "Z",
+        r_start: u.unyt_quantity | float | None = None,
+        r_stop: u.unyt_quantity | float | None = None,
     ):
         if isinstance(weights, str):
             weights_name = weights
@@ -706,7 +717,16 @@ class Snapshot:
 
         r = (X**2 + Y**2 + Z**2) ** (1 / 2)
 
-        rbins = np.logspace(np.log10(np.min(r)), np.log10(np.max(r)), res)
+        if r_start is None:
+            r_start = np.min(r)
+        else:
+            r_start = r_start / r.units
+        if r_stop is None:
+            r_stop = np.max(r)
+        else:
+            r_stop = r_stop / r.units
+        rbins = np.logspace(np.log10(r_start), np.log10(r_stop), res)
+
         rbins *= r.units
         if weights_name != "none":
             profile, bin_edges = np.histogram(r, rbins, weights=weights * data)
@@ -780,7 +800,11 @@ class Snapshot:
         # Attach code-length units to any bare-number endpoint, mirroring the
         # `_as_len` handling in `to_3dgrid`, then express both in the cell units.
         def _as_len(v):
-            return v.to(length_unit) if isinstance(v, u.unyt_quantity) else v * units.lscale
+            return (
+                v.to(length_unit)
+                if isinstance(v, u.unyt_quantity)
+                else v * units.lscale
+            )
 
         p0 = u.unyt_array([_as_len(c) for c in p0]).to(length_unit)
         p1 = u.unyt_array([_as_len(c) for c in p1]).to(length_unit)
@@ -893,7 +917,9 @@ class Snapshot:
                 sel &= idx_mask
 
         if box is None and mask is None:
-            raise ValueError("No region specified: pass `box`, `center`+`width`, or `mask`.")
+            raise ValueError(
+                "No region specified: pass `box`, `center`+`width`, or `mask`."
+            )
 
         # When no explicit box was given, frame the clip on the bounding box of
         # the selected cells so projections/slices default to the region.
@@ -991,7 +1017,7 @@ class SnapshotH5(Snapshot):
                 arr = np.concatenate([f[f"rank{i}/{field}"] for i in range(self.rank)])
             except KeyError:  # If field is not under rank, try on the root order
                 arr = f[field][()]
-            try: 
+            try:
                 arr *= units.get_unit(field)
             except ValueError:
                 warnings.warn(f"Field {field} not recognized. Passing without unit.")
@@ -1019,7 +1045,9 @@ class SnapshotH5(Snapshot):
                 try:
                     n = len(f["X"])
                 except KeyError:
-                    raise Exception("Failed to get length. Neither field X nor rank0/X exists.")
+                    raise Exception(
+                        "Failed to get length. Neither field X nor rank0/X exists."
+                    )
 
         return n
 
@@ -1152,7 +1180,7 @@ class SnapshotNPY(Snapshot):
         if idx != slice(None):
             arr = arr[idx]
 
-        try: 
+        try:
             arr *= units.get_unit(field)
         except ValueError:
             warnings.warn(f"Field {field} not recognized. Passing without unit.")
