@@ -75,11 +75,27 @@ class SnapshotPlotter:
         """
         try:
             return self.slice(
-                data=data, res=512, X="X", Y="Y", Z="Z", plane="xy", slice_coord=0, **kwargs
+                data=data,
+                res=512,
+                X="X",
+                Y="Y",
+                Z="Z",
+                plane="xy",
+                slice_coord=0,
+                **kwargs,
             )
-        except FileNotFoundError:  # X, Y, Z are not found, do cmx, cmy, cmz (center of mass)
+        except (
+            FileNotFoundError
+        ):  # X, Y, Z are not found, do cmx, cmy, cmz (center of mass)
             return self.slice(
-                data=data, res=512, X="CMx", Y="CMy", Z="CMz", plane="xy", slice_coord=0, **kwargs
+                data=data,
+                res=512,
+                X="CMx",
+                Y="CMy",
+                Z="CMz",
+                plane="xy",
+                slice_coord=0,
+                **kwargs,
             )
 
     def slice(
@@ -197,6 +213,7 @@ class SnapshotPlotter:
         colorbar_label: str | None = None,
         aspect_equal: bool = True,
         log_scale: bool = True,
+        colorbar_pad: float | None = None,
         **kwargs,
     ):
         """Compute a column-integrated projection and render it as a plot.
@@ -227,6 +244,8 @@ class SnapshotPlotter:
                                label_latex and unit_latex.
         :param aspect_equal: Set equal aspect ratio. Defaults to ``True``.
         :param log_scale: Set logarithmic scale. Defaults to ``True''.
+        :param colorbar_pad: Padding between axes and colorbar. Matplotlib
+                             default when ``None``.
         :param kwargs: Extra keyword arguments forwarded to
                        :func:`~matplotlib.pyplot.pcolormesh`.
         :returns: Tuple ``(ax, im, projected_data)``.
@@ -255,6 +274,7 @@ class SnapshotPlotter:
             colorbar_label=colorbar_label,
             aspect_equal=aspect_equal,
             log_scale=log_scale,
+            colorbar_pad=colorbar_pad,
             **kwargs,
         )
 
@@ -308,6 +328,7 @@ def scalar_map(
     colorbar_label: str | None = None,
     aspect_equal: bool = True,
     log_scale: bool = True,
+    colorbar_pad: float | None = None,
     **kwargs,
 ):
     """Render a 2-D scalar field on a regular grid as a log-scale colour map.
@@ -329,6 +350,8 @@ def scalar_map(
                            and unit_latex.
     :param aspect_equal: Set equal aspect ratio on the axes.
                          Defaults to ``True``.
+    :param colorbar_pad: Padding between axes and colorbar. Matplotlib
+                         default when ``None``.
     :param kwargs: Additional keyword arguments forwarded to
                    :func:`~matplotlib.pyplot.pcolormesh` (e.g. ``vmin``,
                    ``vmax`` to override auto-scaling).
@@ -341,6 +364,21 @@ def scalar_map(
     # ensure we have an Axes
     if ax is None:
         fig, ax = plt.subplots()
+
+    # get unit before log scaled
+    if colorbar_label is None:
+        if unit_latex is None:  # read the unit from data if not specified
+            try:
+                unit_latex = f.units.latex_repr
+            except AttributeError:
+                unit_latex = ""
+        if unit_latex != "":
+            unit_latex = "/" + unit_latex
+
+        if log_scale:
+            colorbar_label = f"$\\log[{label_latex}{unit_latex}]$"
+        else:
+            colorbar_label = f"${label_latex}{unit_latex}$"
 
     # compute log-space data and choose sensible defaults for vmin/vmax
     if log_scale is True:
@@ -368,26 +406,17 @@ def scalar_map(
         if "vmax" not in kw:
             kw["vmax"] = vmax_default
 
+    # Default to set bad value to the bottom of the colorbar
+    cmap = plt.get_cmap(cmap).copy()
+    cmap.set_bad(cmap(0.0))
+
     xgrid, ygrid = np.meshgrid(xspace, yspace, indexing="ij")
     im = ax.pcolormesh(
         xgrid, ygrid, f, cmap=cmap, **kw
     )  # return im as well in case you want to customise colorbar
 
-    if colorbar_label is None:
-        if unit_latex is None:  # read the unit from data if not specified
-            try:
-                unit_latex = f.units.latex_repr
-            except AttributeError:
-                unit_latex = ""
-        if unit_latex != "":
-            unit_latex = "/" + unit_latex
-
-        if log_scale:
-            colorbar_label = f"$\\log[{label_latex}{unit_latex}]$"
-        else:
-            colorbar_label = f"${label_latex}{unit_latex}$"
-
-    plt.colorbar(im, ax=ax, label=colorbar_label)
+    cbar_kw = {} if colorbar_pad is None else {"pad": colorbar_pad}
+    plt.colorbar(im, ax=ax, label=colorbar_label, **cbar_kw)
 
     if aspect_equal:
         ax.set_aspect("equal", adjustable="box")
