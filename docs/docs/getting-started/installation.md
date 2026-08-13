@@ -14,8 +14,8 @@ cd richio
 pip install -e .
 ```
 
-This pulls in everything the core library needs: `numpy`, `h5py`, `matplotlib`,
-and `unyt` (the unit system). Once it finishes, import the package:
+This pulls in everything the core library needs, including SciPy for threaded
+slice and projection gridding. Once it finishes, import the package:
 
 ```python
 import richio as rio
@@ -37,11 +37,11 @@ pip install "richio[render]"
 ```
 
 Shock finding ([`richio.shockfinder`](../guide/shock-finding.md)) locates shock
-fronts. It uses `scipy` and `numba`, which aren't installed automatically, so add
-them yourself:
+fronts. SciPy is already installed with the core package, but the shock finder
+also needs `numba`, which is not installed automatically:
 
 ```bash
-pip install scipy numba
+pip install numba
 ```
 
 There is also an MPI extra for rendering a single movie across several cluster

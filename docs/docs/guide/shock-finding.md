@@ -2,10 +2,10 @@
 
 !!! info "This is an optional extra"
     The shock finder lives in `richio.shockfinder` and needs `scipy` and
-    `numba`, which aren't installed automatically:
+    `numba`, which is not installed automatically:
 
     ```bash
-    pip install scipy numba
+    pip install numba
     ```
 
 A shock is a thin front where gas slams into slower gas ahead of it and is

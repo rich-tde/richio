@@ -44,8 +44,8 @@ stays small and quick to import:
 
 - 3-D volume rendering: shaded images and rotating movies of the gas
   (`pip install "richio[render]"`).
-- Shock finding: locating shock fronts and measuring their strength (needs
-  `scipy` and `numba`).
+- Shock finding: locating shock fronts and measuring their strength (needs the
+  optional `numba` dependency).
 
 ## Where to go next
 

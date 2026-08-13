@@ -45,7 +45,7 @@ ax, im, data = snap.plots.slice(
 ```
 
 The geometry arguments (`res`, `plane`, `slice_coord`, `box_size`, `selection`,
-`unit_system`) are the ones from
+`unit_system`, `workers`) are the ones from
 [Slices and projections](slices-and-projections.md), and mean the same here. The
 rest control how the figure looks:
 
@@ -71,7 +71,9 @@ styling options as `slice`:
 ax, im, data = snap.plots.projection("density", res=256, plane="xy")
 ```
 
-As with `snap.project`, `plane=None` integrates along z.
+As with `snap.project`, `plane=None` integrates along z. The nearest-neighbour
+query uses eight threads by default; pass `workers=1` for serial execution or a
+different count appropriate for your job allocation.
 
 ## Plotting something you computed
 

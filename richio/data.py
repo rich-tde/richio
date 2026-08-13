@@ -350,13 +350,14 @@ class Snapshot:
         unit_system: str = "cgs",
         selection: ArrayLike = None,
         plane: str | None = None,
+        workers: int = 8,
     ):
         """Interpolate *data* onto a 3-D grid and integrate (project) along the
         normal axis of *plane*.
 
-        Calls :meth:`to_3dgrid` to build the nearest-neighbour grid, then sums
-        ``grid_data * dz`` along the integration axis to produce a
-        column-integrated 2-D map.
+        Builds one nearest-neighbour tree, queries the output grid in bounded
+        x-slabs, and immediately integrates each slab along the normal axis.
+        This avoids materialising full ``(nx, ny, nz)`` index and field cubes.
 
         :param data: Field to project — field name string or array of shape
                      ``(N,)``.
@@ -375,25 +376,109 @@ class Snapshot:
         :param plane: Projection plane (e.g. ``"xy"``, ``"xz"``, ``"yz"``).
                       Determines which axis is integrated over.  ``None``
                       (default) integrates along Z.
+        :param workers: Threads used by the k-d tree query. Defaults to ``8``;
+                        use ``1`` for serial execution or ``-1`` for all cores.
         :returns: Tuple ``(projected_data, xspace, yspace)`` where
                   *projected_data* has shape ``(nx-1, ny-1)`` and *xspace* /
                   *yspace* are 1-D coordinate arrays.
         :rtype: tuple[:class:`unyt.unyt_array`, :class:`unyt.unyt_array`,
                       :class:`unyt.unyt_array`]
         """
-        i, xspace, yspace, zspace = self.to_3dgrid(
-            res, X, Y, Z, box_size, selection, plane=plane
+        coords, source_indices, xspace, yspace, zspace = self._prepare_3d_grid(
+            res=res,
+            X=X,
+            Y=Y,
+            Z=Z,
+            box_size=box_size,
+            selection=selection,
+            plane=plane,
         )
-
         data = self._get_data(data)
-        grid_data = data[i]
 
-        dz = zspace[1:] - zspace[:-1]  # PM: dz = (z1 - z0) / (nz - 1)
-        projected_data = np.sum(grid_data[:-1, :-1, :-1] * dz, axis=-1).in_base(
-            unit_system
-        )  # PM: grid_data[:, :, :-1]
+        nx, ny, nz = len(xspace), len(yspace), len(zspace)
+        if min(nx, ny, nz) < 2:
+            raise ValueError("Projection resolution must be at least 2 along every axis.")
+
+        from scipy.spatial import KDTree
+
+        tree = KDTree(coords)
+        dz = zspace[1:] - zspace[:-1]
+        projected_values = np.empty((nx - 1, ny - 1), dtype="float64")
+        data_values = np.asarray(data)
+        dz_values = np.asarray(dz)
+
+        # The old implementation queried the full grid and then discarded the
+        # upper x/y faces and final z sample. Query only the points that
+        # contribute to the same result, while preserving its shape and values.
+        for a, i_local in _iter_3d_nearest_slabs(
+            tree,
+            xspace[:-1],
+            yspace[:-1],
+            zspace[:-1],
+            workers=workers,
+        ):
+            i = source_indices[i_local] if source_indices is not None else i_local
+            m = i.shape[0]
+            projected_values[a : a + m] = np.sum(data_values[i] * dz_values, axis=-1)
+
+        projected_data = u.unyt_array(
+            projected_values, data.units * zspace.units
+        ).in_base(unit_system)
 
         return projected_data, xspace, yspace
+
+    def _prepare_3d_grid(
+        self,
+        res: int | ArrayLike,
+        X: str | ArrayLike = "X",
+        Y: str | ArrayLike = "Y",
+        Z: str | ArrayLike = "Z",
+        box_size: ArrayLike | None = None,
+        selection: ArrayLike | None = None,
+        endpoint: bool = False,
+        plane: str | None = None,
+    ):
+        """Prepare source coordinates and regular axes for 3-D queries."""
+        X = self._get_data(X)
+        Y = self._get_data(Y)
+        Z = self._get_data(Z)
+        if not (len(X) == len(Y) == len(Z)):
+            raise ValueError("X, Y, and Z coordinate arrays must have the same length.")
+
+        source_indices = None
+        if selection is not None:
+            mask = _selection_mask(selection, len(X))
+            source_indices = np.flatnonzero(mask)
+            X, Y, Z = X[mask], Y[mask], Z[mask]
+        if len(X) == 0:
+            raise ValueError("Cannot build a k-d tree from an empty cell selection.")
+
+        if box_size is None:
+            x0, y0, z0, x1, y1, z1 = self.box
+        else:
+            if len(box_size) != 6:
+                raise ValueError("A 3-D grid box_size must contain six bounds.")
+
+            def _as_len(v):
+                return v if isinstance(v, u.unyt_quantity) else v * units.lscale
+
+            x0, y0, z0, x1, y1, z1 = (_as_len(v) for v in box_size)
+
+        if plane is not None:
+            X, Y, Z = _parse_plane(plane, X, Y, Z)
+            x0, y0, z0 = _parse_plane(plane, x0, y0, z0)
+            x1, y1, z1 = _parse_plane(plane, x1, y1, z1)
+
+        try:
+            nx, ny, nz = res[0], res[1], res[2]
+        except TypeError:
+            nx = ny = nz = res
+
+        xspace = np.linspace(x0, x1, nx, endpoint=endpoint)
+        yspace = np.linspace(y0, y1, ny, endpoint=endpoint)
+        zspace = np.linspace(z0, z1, nz, endpoint=endpoint)
+        coords = np.asarray(np.stack([X, Y, Z], axis=-1), dtype="float64")
+        return coords, source_indices, xspace, yspace, zspace
 
     def to_3dgrid(
         self,
@@ -405,7 +490,7 @@ class Snapshot:
         selection: ArrayLike = None,
         endpoint: bool = False,
         plane: str | None = None,
-        workers: int = 1,
+        workers: int = 8,
     ):
         """Interpolate cell centres onto a regular 3-D Cartesian grid.
 
@@ -432,56 +517,25 @@ class Snapshot:
                       integration axis for :meth:`project`) matches the normal
                       of the requested plane.  ``None`` (default) leaves the
                       axis order unchanged (integrates along Z).
+        :param workers: Threads used by the k-d tree query. Defaults to ``8``;
+                        use ``1`` for serial execution or ``-1`` for all cores.
         :returns: Tuple ``(i, xspace, yspace, zspace)`` where *i* has shape
                   ``(nx, ny, nz)`` and contains **absolute** indices into the
                   original particle array, so ``snap.density[i]`` gives the
                   projected field directly.
         :rtype: tuple
         """
-        # Fetch data
-        X = self._get_data(X)
-        Y = self._get_data(Y)
-        Z = self._get_data(Z)
-
-        # Select cells
-        if selection is not None:
-            X = X[selection]
-            Y = Y[selection]
-            Z = Z[selection]
-
-        # Set boxsize
-        if box_size is None:
-            x0, y0, z0, x1, y1, z1 = self.box  # Load the box size
-        else:
-            x0, y0, z0, x1, y1, z1 = box_size
-
-            # Assign the default (code length ~ R_sun) unit to any bare number,
-            # so an explicit numeric box works like a unit-bearing one and the
-            # returned coordinate spaces carry units.
-            def _as_len(v):
-                return v if isinstance(v, u.unyt_quantity) else v * units.lscale
-
-            x0, y0, z0, x1, y1, z1 = (_as_len(v) for v in (x0, y0, z0, x1, y1, z1))
-
-        # Permute axes so that Z is the integration axis for the requested plane
-        if plane is not None:
-            X, Y, Z = _parse_plane(plane, X, Y, Z)
-            x0, y0, z0 = _parse_plane(plane, x0, y0, z0)
-            x1, y1, z1 = _parse_plane(plane, x1, y1, z1)
-
-        # Set resolution
-        try:
-            nx, ny, nz = res[0], res[1], res[2]
-        except TypeError:
-            nx = ny = nz = res
-
-        # Make Euclidean grid
-        # disable endpoints by default such that dz = (z1-z0)/res instead of (z1-z0)/(res-1)
-        # PM: endpoint=True
-        # TODO: add an option to use np.geomspace
-        xspace = np.linspace(x0, x1, nx, endpoint=endpoint)
-        yspace = np.linspace(y0, y1, ny, endpoint=endpoint)
-        zspace = np.linspace(z0, z1, nz, endpoint=endpoint)
+        coords, source_indices, xspace, yspace, zspace = self._prepare_3d_grid(
+            res=res,
+            X=X,
+            Y=Y,
+            Z=Z,
+            box_size=box_size,
+            selection=selection,
+            endpoint=endpoint,
+            plane=plane,
+        )
+        nx, ny, nz = len(xspace), len(yspace), len(zspace)
 
         # Nearest-neighbour resample.  Build the k-d tree once and query the grid
         # in x-slabs, filling the (nx, ny, nz) index cube, instead of
@@ -490,36 +544,15 @@ class Snapshot:
         # one slab of query points; the result is identical to a single query.
         from scipy.spatial import KDTree
 
-        coords = np.stack([X, Y, Z], axis=-1)  # coordinates of the particles
-        tree = KDTree(np.asarray(coords))
-
-        xs = np.asarray(xspace, dtype="float64")
-        yy, zz = np.meshgrid(
-            np.asarray(yspace, dtype="float64"),
-            np.asarray(zspace, dtype="float64"),
-            indexing="ij",
-        )
-        yz = np.column_stack([yy.ravel(), zz.ravel()])  # (ny*nz, 2)
-        del yy, zz
-
-        plane_pts = ny * nz
-        slab = max(1, int(8_000_000 // max(plane_pts, 1)))  # ~8M query points/chunk
-        block = np.empty((slab * plane_pts, 3), dtype="float64")
+        tree = KDTree(coords)
         i_local = np.empty((nx, ny, nz), dtype=np.intp)
-        for a in range(0, nx, slab):
-            m = min(slab, nx - a)
-            b = block[: m * plane_pts]
-            b[:, 0] = np.repeat(xs[a : a + m], plane_pts)
-            b[:, 1] = np.tile(yz[:, 0], m)
-            b[:, 2] = np.tile(yz[:, 1], m)
-            _, idx = tree.query(b, k=1, eps=0, p=2, workers=workers)
-            i_local[a : a + m] = idx.reshape(m, ny, nz)
+        for a, idx in _iter_3d_nearest_slabs(
+            tree, xspace, yspace, zspace, workers=workers
+        ):
+            i_local[a : a + idx.shape[0]] = idx
 
         # Map local indices back to absolute indices in the original particle array
-        if selection is not None:
-            i = np.where(selection)[0][i_local]
-        else:
-            i = i_local
+        i = source_indices[i_local] if source_indices is not None else i_local
 
         return i, xspace, yspace, zspace
 
@@ -534,6 +567,7 @@ class Snapshot:
         box_size: ArrayLike | None = None,
         selection: ArrayLike | None = None,
         volume_selection: bool = True,
+        workers: int = 8,
     ):
         """Compute the nearest-neighbour index map for a 2-D slice plane.
 
@@ -557,6 +591,8 @@ class Snapshot:
         :param volume_selection: Pre-filter to cells within one cell-size of
                                  the plane to speed up the k-d tree query.
                                  Defaults to ``True``.
+        :param workers: Threads used by the k-d tree query. Defaults to ``8``;
+                        use ``1`` for serial execution or ``-1`` for all cores.
         :returns: Tuple ``(i, xspace, yspace)`` where *i* has shape ``(nx, ny)``
                   and contains **absolute** indices into the original particle
                   array (before any masking), so ``snap.density[i]`` gives the
@@ -575,7 +611,7 @@ class Snapshot:
         # Build combined boolean mask over the full particle set
         mask = np.ones(len(X), dtype=bool)
         if selection is not None:
-            mask &= selection
+            mask &= _selection_mask(selection, len(X))
 
         X = X[mask]
         Y = Y[mask]
@@ -622,6 +658,9 @@ class Snapshot:
             Y = Y[vol_mask]
             Z = Z[vol_mask]
 
+        if len(X) == 0:
+            raise ValueError("Cannot build a k-d tree from an empty cell selection.")
+
         # Make Euclidean grid
         xspace = np.linspace(x0, x1, nx, endpoint=False)
         yspace = np.linspace(y0, y1, ny, endpoint=False)
@@ -634,7 +673,9 @@ class Snapshot:
             np.stack([grid_x, grid_y, grid_z], axis=-1)
         )  # (nx, ny, 1, 3) → (nx, ny, 3)
 
-        i_local = _kdtree_interpolate(coords=coords, grid_coords=grid_coords)
+        i_local = _kdtree_interpolate(
+            coords=coords, grid_coords=grid_coords, workers=workers
+        )
 
         # Map local indices back to absolute indices in the original particle array
         i = np.where(mask)[0][i_local]
@@ -654,6 +695,7 @@ class Snapshot:
         selection: ArrayLike | None = None,
         unit_system: str = "cgs",
         volume_selection: bool = True,
+        workers: int = 8,
     ):
         """Make a slice of the simulation grid.
 
@@ -675,6 +717,8 @@ class Snapshot:
         :param unit_system: Output unit system. Defaults to ``'cgs'``.
         :param volume_selection: Pre-filter cells near the slice plane.
                                  Defaults to ``True``.
+        :param workers: Threads used by the k-d tree query. Defaults to ``8``;
+                        use ``1`` for serial execution or ``-1`` for all cores.
         :returns: Tuple ``(sliced_data, xspace, yspace)``.
         :rtype: tuple
         """
@@ -688,6 +732,7 @@ class Snapshot:
             box_size=box_size,
             selection=selection,
             volume_selection=volume_selection,
+            workers=workers,
         )
         sliced_data = self._get_data(data)[i].in_base(unit_system)
         return sliced_data, xspace, yspace
@@ -1348,3 +1393,54 @@ def _kdtree_interpolate(coords, grid_coords, k=1, eps=0, workers=1):
     )  # the most time-consuming step
 
     return i
+
+
+def _selection_mask(selection, size):
+    """Return a validated one-dimensional boolean cell-selection mask."""
+    mask = np.asarray(selection, dtype=bool)
+    if mask.shape != (size,):
+        raise ValueError(
+            f"selection must have shape ({size},), received {mask.shape}."
+        )
+    if not np.any(mask):
+        raise ValueError("Cannot build a k-d tree from an empty cell selection.")
+    return mask
+
+
+def _iter_3d_nearest_slabs(
+    tree,
+    xspace,
+    yspace,
+    zspace,
+    *,
+    workers=8,
+    max_query_points=8_000_000,
+):
+    """Yield ``(x_start, nearest_indices)`` for bounded 3-D query slabs.
+
+    The reusable query buffer is capped by *max_query_points*.  Consequently,
+    callers can either assemble a complete index cube (:meth:`to_3dgrid`) or
+    consume and discard each slab (:meth:`project`) without changing the
+    nearest-neighbour result.
+    """
+    xs = np.asarray(xspace, dtype="float64")
+    ys = np.asarray(yspace, dtype="float64")
+    zs = np.asarray(zspace, dtype="float64")
+    ny, nz = len(ys), len(zs)
+    plane_points = ny * nz
+    if plane_points == 0 or len(xs) == 0:
+        raise ValueError("Grid resolution must be positive along every axis.")
+
+    yy, zz = np.meshgrid(ys, zs, indexing="ij")
+    yz = np.column_stack([yy.ravel(), zz.ravel()])
+    slab_size = max(1, int(max_query_points // plane_points))
+    block = np.empty((slab_size * plane_points, 3), dtype="float64")
+
+    for a in range(0, len(xs), slab_size):
+        m = min(slab_size, len(xs) - a)
+        query = block[: m * plane_points]
+        query[:, 0] = np.repeat(xs[a : a + m], plane_points)
+        query[:, 1] = np.tile(yz[:, 0], m)
+        query[:, 2] = np.tile(yz[:, 1], m)
+        _, indices = tree.query(query, k=1, eps=0, p=2, workers=workers)
+        yield a, indices.reshape(m, ny, nz)

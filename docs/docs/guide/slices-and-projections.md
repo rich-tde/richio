@@ -52,7 +52,26 @@ column, xspace, yspace = snap.project("density", res=256, plane="xy")
 ```
 
 It samples onto a 3-D grid and sums the field times the cell depth along the
-viewing axis. With `plane=None` (the default) it adds up along z.
+viewing axis. With `plane=None` (the default) it adds up along z. Projection
+queries and integrates bounded slabs one at a time, so it does not keep a full
+3-D index cube and a full 3-D field cube in memory.
+
+## Using CPU cores
+
+Slices and projections use eight threads for the nearest-neighbour query by
+default. You can choose the thread count on both the data and plotting APIs:
+
+```python
+sliced, x, y = snap.slice("density", res=512, workers=4)
+column, x, y = snap.project("density", res=512, workers=8)
+snap.plots.projection("density", res=512, workers=8)
+```
+
+Use `workers=1` for serial execution and `workers=-1` to ask SciPy to use every
+available core. Eight is a safer default on shared compute nodes: using every
+visible core can oversubscribe a job allocation and may be slower once the query
+has saturated. Only the k-d tree query is threaded; snapshot I/O and tree
+construction remain serial.
 
 ## Choosing the region with `box_size`
 
@@ -113,8 +132,9 @@ Beyond `res`, `plane`, `slice_coord`, and `box_size`, these methods take:
 - `volume_selection` (slices only, on by default): first drop cells far from the
   slice plane, so the k-d tree has fewer points to search. It speeds the slice up
   without changing the result.
-- `workers` (`to_3dgrid`): how many threads to use for the search; `-1` uses
-  every core.
+- `workers`: how many threads to use for the nearest-neighbour search (default
+  `8`); `1` is serial and `-1` uses every available core. It is accepted by
+  `slice`, `project`, `to_2dgrid`, `to_3dgrid`, and their plotting wrappers.
 
 !!! warning "Don't restrict a slice or projection with a value-based mask"
     The nearest-cell fill assumes the cells cover the volume. If you pass a

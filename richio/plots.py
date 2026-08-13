@@ -118,6 +118,7 @@ class SnapshotPlotter:
         colorbar_label: str | None = None,
         aspect_equal: bool = True,
         log_scale: bool = True,
+        workers: int = 8,
         **kwargs,
     ):
         """Compute a mid-plane slice and render it as a ``pcolormesh`` plot.
@@ -157,6 +158,8 @@ class SnapshotPlotter:
         :param log_scale: Plot ``log₁₀`` of the data and label the colorbar
                           accordingly.  Set to ``False`` for a linear scale.
                           Defaults to ``True``.
+        :param workers: Threads used by the k-d tree query. Defaults to ``8``;
+                        use ``1`` for serial execution or ``-1`` for all cores.
         :param kwargs: Additional keyword arguments forwarded to
                        :func:`~matplotlib.pyplot.pcolormesh` (e.g. ``vmin``,
                        ``vmax``).
@@ -177,6 +180,7 @@ class SnapshotPlotter:
             selection=selection,
             unit_system=unit_system,
             volume_selection=volume_selection,
+            workers=workers,
         )
 
         ax, im = scalar_map(
@@ -214,6 +218,7 @@ class SnapshotPlotter:
         aspect_equal: bool = True,
         log_scale: bool = True,
         colorbar_pad: float | None = None,
+        workers: int = 8,
         **kwargs,
     ):
         """Compute a column-integrated projection and render it as a plot.
@@ -246,6 +251,8 @@ class SnapshotPlotter:
         :param log_scale: Set logarithmic scale. Defaults to ``True''.
         :param colorbar_pad: Padding between axes and colorbar. Matplotlib
                              default when ``None``.
+        :param workers: Threads used by the k-d tree query. Defaults to ``8``;
+                        use ``1`` for serial execution or ``-1`` for all cores.
         :param kwargs: Extra keyword arguments forwarded to
                        :func:`~matplotlib.pyplot.pcolormesh`.
         :returns: Tuple ``(ax, im, projected_data)``.
@@ -261,6 +268,7 @@ class SnapshotPlotter:
             unit_system=unit_system,
             selection=selection,
             plane=plane,
+            workers=workers,
         )
 
         ax, im = scalar_map(
