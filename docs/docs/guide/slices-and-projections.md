@@ -73,6 +73,45 @@ visible core can oversubscribe a job allocation and may be slower once the query
 has saturated. Only the k-d tree query is threaded; snapshot I/O and tree
 construction remain serial.
 
+## Concentrating projection samples near a physical axis
+
+Three-dimensional grids are linear by default. For domains that span both
+negative and positive coordinates, such as a thin TDE stream around `z=0`, a
+plain logarithmic axis is not defined. RICHIO therefore offers an opt-in
+**sinh** axis:
+
+```python
+column, x, y = snap.project(
+    "density",
+    res=(256, 256, 512),
+    plane="xy",
+    spacing=("linear", "linear", "sinh"),
+    sinh_scale=2 * rstar,
+)
+```
+
+The physical Z coordinates are generated from uniformly spaced transformed
+coordinates `s` using `z = sinh_scale * sinh(s)`. Spacing is nearly linear near
+zero and grows smoothly toward both ends of the box. `sinh_scale` controls the
+central region: a larger value approaches a linear grid, while a smaller value
+puts more samples near zero and makes the outer cells wider.
+
+The three `spacing` entries always refer to physical X, Y, and Z—even when
+`plane` permutes the returned axes. A scalar `sinh_scale` applies to every sinh
+axis; use a three-element sequence to set them separately:
+
+```python
+indices, x, y, z = snap.to_3dgrid(
+    res=(256, 256, 512),
+    spacing=("linear", "linear", "sinh"),
+    sinh_scale=(None, None, 2 * rstar),
+)
+```
+
+Bare scales use RICH code-length units. Linear spacing remains the default
+because the best sinh scale depends on the structure and quantity being
+integrated. Check convergence before using it for scientific measurements.
+
 ## Choosing the region with `box_size`
 
 Both methods accept a `box_size` that picks out the rectangle (or box) to sample,
@@ -135,6 +174,8 @@ Beyond `res`, `plane`, `slice_coord`, and `box_size`, these methods take:
 - `workers`: how many threads to use for the nearest-neighbour search (default
   `8`); `1` is serial and `-1` uses every available core. It is accepted by
   `slice`, `project`, `to_2dgrid`, `to_3dgrid`, and their plotting wrappers.
+- `spacing` / `sinh_scale` (3-D grids and projections): opt into per-physical-axis
+  sinh spacing while keeping linear spacing elsewhere.
 
 !!! warning "Don't restrict a slice or projection with a value-based mask"
     The nearest-cell fill assumes the cells cover the volume. If you pass a

@@ -73,7 +73,9 @@ ax, im, data = snap.plots.projection("density", res=256, plane="xy")
 
 As with `snap.project`, `plane=None` integrates along z. The nearest-neighbour
 query uses eight threads by default; pass `workers=1` for serial execution or a
-different count appropriate for your job allocation.
+different count appropriate for your job allocation. The plotting wrapper also
+accepts the data API's `spacing` and `sinh_scale` options for nonuniform 3-D
+grids.
 
 ## Plotting something you computed
 

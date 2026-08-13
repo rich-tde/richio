@@ -219,6 +219,8 @@ class SnapshotPlotter:
         log_scale: bool = True,
         colorbar_pad: float | None = None,
         workers: int = 8,
+        spacing: str | tuple[str, str, str] = "linear",
+        sinh_scale: float | u.unyt_quantity | ArrayLike | None = None,
         **kwargs,
     ):
         """Compute a column-integrated projection and render it as a plot.
@@ -253,6 +255,12 @@ class SnapshotPlotter:
                              default when ``None``.
         :param workers: Threads used by the k-d tree query. Defaults to ``8``;
                         use ``1`` for serial execution or ``-1`` for all cores.
+        :param spacing: Grid spacing along physical X, Y, and Z. Either
+                        ``"linear"`` or a three-element sequence containing
+                        ``"linear"`` / ``"sinh"``.
+        :param sinh_scale: Positive central linear scale for sinh-spaced axes.
+                           A scalar applies to all axes; a three-element
+                           sequence configures physical X, Y, and Z separately.
         :param kwargs: Extra keyword arguments forwarded to
                        :func:`~matplotlib.pyplot.pcolormesh`.
         :returns: Tuple ``(ax, im, projected_data)``.
@@ -269,6 +277,8 @@ class SnapshotPlotter:
             selection=selection,
             plane=plane,
             workers=workers,
+            spacing=spacing,
+            sinh_scale=sinh_scale,
         )
 
         ax, im = scalar_map(

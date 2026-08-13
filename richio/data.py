@@ -351,6 +351,8 @@ class Snapshot:
         selection: ArrayLike = None,
         plane: str | None = None,
         workers: int = 8,
+        spacing: str | tuple[str, str, str] = "linear",
+        sinh_scale: float | u.unyt_quantity | ArrayLike | None = None,
     ):
         """Interpolate *data* onto a 3-D grid and integrate (project) along the
         normal axis of *plane*.
@@ -378,6 +380,14 @@ class Snapshot:
                       (default) integrates along Z.
         :param workers: Threads used by the k-d tree query. Defaults to ``8``;
                         use ``1`` for serial execution or ``-1`` for all cores.
+        :param spacing: Grid spacing along the physical X, Y, and Z axes.
+                        Either ``"linear"`` for every axis or a three-element
+                        sequence containing ``"linear"`` / ``"sinh"``.
+                        Defaults to ``"linear"``.
+        :param sinh_scale: Positive central linear scale for every ``"sinh"``
+                           axis. A scalar applies to all axes; a three-element
+                           sequence sets physical X, Y, and Z separately. Bare
+                           numbers use RICH code-length units.
         :returns: Tuple ``(projected_data, xspace, yspace)`` where
                   *projected_data* has shape ``(nx-1, ny-1)`` and *xspace* /
                   *yspace* are 1-D coordinate arrays.
@@ -392,6 +402,8 @@ class Snapshot:
             box_size=box_size,
             selection=selection,
             plane=plane,
+            spacing=spacing,
+            sinh_scale=sinh_scale,
         )
         data = self._get_data(data)
 
@@ -437,6 +449,8 @@ class Snapshot:
         selection: ArrayLike | None = None,
         endpoint: bool = False,
         plane: str | None = None,
+        spacing: str | tuple[str, str, str] = "linear",
+        sinh_scale: float | u.unyt_quantity | ArrayLike | None = None,
     ):
         """Prepare source coordinates and regular axes for 3-D queries."""
         X = self._get_data(X)
@@ -464,19 +478,31 @@ class Snapshot:
 
             x0, y0, z0, x1, y1, z1 = (_as_len(v) for v in box_size)
 
+        spacing = _axis_options(spacing, "spacing")
+        sinh_scale = _axis_options(sinh_scale, "sinh_scale")
+
         if plane is not None:
             X, Y, Z = _parse_plane(plane, X, Y, Z)
             x0, y0, z0 = _parse_plane(plane, x0, y0, z0)
             x1, y1, z1 = _parse_plane(plane, x1, y1, z1)
+            order = _plane_indices(plane)
+            spacing = tuple(spacing[index] for index in order)
+            sinh_scale = tuple(sinh_scale[index] for index in order)
 
         try:
             nx, ny, nz = res[0], res[1], res[2]
         except TypeError:
             nx = ny = nz = res
 
-        xspace = np.linspace(x0, x1, nx, endpoint=endpoint)
-        yspace = np.linspace(y0, y1, ny, endpoint=endpoint)
-        zspace = np.linspace(z0, z1, nz, endpoint=endpoint)
+        xspace = _grid_axis(
+            x0, x1, nx, spacing[0], sinh_scale[0], endpoint=endpoint
+        )
+        yspace = _grid_axis(
+            y0, y1, ny, spacing[1], sinh_scale[1], endpoint=endpoint
+        )
+        zspace = _grid_axis(
+            z0, z1, nz, spacing[2], sinh_scale[2], endpoint=endpoint
+        )
         coords = np.asarray(np.stack([X, Y, Z], axis=-1), dtype="float64")
         return coords, source_indices, xspace, yspace, zspace
 
@@ -491,6 +517,8 @@ class Snapshot:
         endpoint: bool = False,
         plane: str | None = None,
         workers: int = 8,
+        spacing: str | tuple[str, str, str] = "linear",
+        sinh_scale: float | u.unyt_quantity | ArrayLike | None = None,
     ):
         """Interpolate cell centres onto a regular 3-D Cartesian grid.
 
@@ -519,6 +547,12 @@ class Snapshot:
                       axis order unchanged (integrates along Z).
         :param workers: Threads used by the k-d tree query. Defaults to ``8``;
                         use ``1`` for serial execution or ``-1`` for all cores.
+        :param spacing: Grid spacing along physical X, Y, and Z. Pass a
+                        three-element sequence of ``"linear"`` / ``"sinh"``
+                        values to configure axes separately.
+        :param sinh_scale: Positive central scale for ``"sinh"`` axes. A
+                           scalar applies to all axes; a three-element sequence
+                           configures physical X, Y, and Z separately.
         :returns: Tuple ``(i, xspace, yspace, zspace)`` where *i* has shape
                   ``(nx, ny, nz)`` and contains **absolute** indices into the
                   original particle array, so ``snap.density[i]`` gives the
@@ -534,6 +568,8 @@ class Snapshot:
             selection=selection,
             endpoint=endpoint,
             plane=plane,
+            spacing=spacing,
+            sinh_scale=sinh_scale,
         )
         nx, ny, nz = len(xspace), len(yspace), len(zspace)
 
@@ -1320,6 +1356,59 @@ class ClippedSnapshot(Snapshot):
     def keys(self) -> list:
         """Return the parent snapshot's field names (the clip exposes the same fields)."""
         return self.parent.keys()
+
+
+def _axis_options(value, name):
+    """Expand a scalar axis option or validate a physical-X/Y/Z sequence."""
+    if value is None or isinstance(value, (str, u.unyt_quantity)) or np.isscalar(value):
+        return (value, value, value)
+    options = tuple(value)
+    if len(options) != 3:
+        raise ValueError(f"{name} must be a scalar or a three-element sequence.")
+    return options
+
+
+def _plane_indices(plane):
+    """Return physical-axis indices in the output order requested by *plane*."""
+    if not isinstance(plane, str) or len(plane) != 2 or len(set(plane)) != 2:
+        raise ValueError(f"Plane {plane!r} must contain two different axes.")
+    if any(axis not in "xyz" for axis in plane):
+        raise ValueError(f"Plane {plane!r} contains an unrecognizable axis.")
+    normal = ({"x", "y", "z"} - set(plane)).pop()
+    lookup = {"x": 0, "y": 1, "z": 2}
+    return lookup[plane[0]], lookup[plane[1]], lookup[normal]
+
+
+def _grid_axis(start, stop, size, spacing, sinh_scale, *, endpoint=False):
+    """Construct a unit-aware linear or sinh-spaced coordinate axis."""
+    spacing = str(spacing).lower()
+    if spacing == "linear":
+        return np.linspace(start, stop, size, endpoint=endpoint)
+    if spacing != "sinh":
+        raise ValueError(
+            f"Unsupported grid spacing {spacing!r}; choose 'linear' or 'sinh'."
+        )
+    if sinh_scale is None:
+        raise ValueError("sinh_scale is required for every axis using sinh spacing.")
+
+    unit = start.units
+    if isinstance(sinh_scale, u.unyt_quantity):
+        scale = sinh_scale.to(unit)
+    else:
+        scale = (sinh_scale * units.lscale).to(unit)
+    scale_value = float(scale.value)
+    if not np.isfinite(scale_value) or scale_value <= 0:
+        raise ValueError("sinh_scale must be finite and strictly positive.")
+
+    start_value = float(start.to_value(unit))
+    stop_value = float(stop.to_value(unit))
+    transformed = np.linspace(
+        np.arcsinh(start_value / scale_value),
+        np.arcsinh(stop_value / scale_value),
+        size,
+        endpoint=endpoint,
+    )
+    return u.unyt_array(scale_value * np.sinh(transformed), unit)
 
 
 def _parse_plane(plane, x, y, z):
