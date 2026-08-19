@@ -367,10 +367,10 @@ def _scalar_display(ax, arr, cmap, norm, norm_name, flip_x):
     return cmap_obj
 
 
-def _annotate_ax(ax, annotate):
+def _annotate_ax(ax, annotate, *, color="w"):
     """Draw a corner text label (e.g. a snapshot time) on *ax*."""
     if annotate:
-        ax.text(0.02, 0.965, annotate, transform=ax.transAxes, color="w",
+        ax.text(0.02, 0.965, annotate, transform=ax.transAxes, color=color,
                 fontsize=14 * _FONT_SCALE, va="top", ha="left")
 
 
@@ -398,9 +398,19 @@ def _draw_scalebar(ax, frac, label, *, color="w"):
                 fontsize=12 * _FONT_SCALE, ha="center", va="bottom")
 
 
+def _draw_points(ax, points, *, color="black", size=16):
+    """Draw point markers given in image axes-fraction coordinates."""
+    if points:
+        x, y = np.asarray(points, dtype="float64").T
+        ax.scatter(x, y, s=size, c=color, edgecolors="none", transform=ax.transAxes,
+                   zorder=10, clip_on=True)
+
+
 def _compose_with_colorbar(filename, img_or_data, *, is_rgb, cmap, norm, vmin, vmax,
                            label, linthresh=1.0, annotate=None, triad=None, flip_x=False,
-                           scalebar_frac=None, scalebar_label=None):
+                           scalebar_frac=None, scalebar_label=None, output_size=None,
+                           dpi=100, annotation_color="w", scalebar_color="w",
+                           points=None, point_color="black", point_size=16):
     """Save *img_or_data* with a dark-themed matplotlib colorbar beside it.
 
     ``is_rgb=True``  → *img_or_data* is an already-rendered RGB(A) image (volume
@@ -422,11 +432,14 @@ def _compose_with_colorbar(filename, img_or_data, *, is_rgb, cmap, norm, vmin, v
     norm = _mpl_norm(norm, vmin, vmax, linthresh)
 
     if is_rgb:
-        h, w = img_or_data.shape[0], img_or_data.shape[1]
+        h, w = img_or_data.shape[:2]
     else:
-        h, w = img_or_data.shape[0], img_or_data.shape[1]
+        # Scalar projection arrays are indexed (x, y), then transposed to display.
+        h, w = img_or_data.shape[1], img_or_data.shape[0]
 
-    fig = plt.figure(figsize=(w / 100.0 * 1.14, h / 100.0), dpi=100)
+    if output_size is None:
+        output_size = (round(w * 1.14), h)
+    fig = plt.figure(figsize=(output_size[0] / dpi, output_size[1] / dpi), dpi=dpi)
     fig.patch.set_facecolor("black")
     ax = fig.add_axes([0.0, 0.0, 0.84, 1.0])
     if is_rgb:
@@ -437,8 +450,9 @@ def _compose_with_colorbar(filename, img_or_data, *, is_rgb, cmap, norm, vmin, v
     else:
         cmap_cb = _scalar_display(ax, img_or_data, cmap, norm, norm_name, flip_x)
     ax.axis("off")
-    _annotate_ax(ax, annotate)
-    _draw_scalebar(ax, scalebar_frac, scalebar_label)
+    _annotate_ax(ax, annotate, color=annotation_color)
+    _draw_scalebar(ax, scalebar_frac, scalebar_label, color=scalebar_color)
+    _draw_points(ax, points, color=point_color, size=point_size)
 
     cax = fig.add_axes([0.865, 0.12, 0.022, 0.76])
     cb = fig.colorbar(ScalarMappable(norm=norm, cmap=cmap_cb), cax=cax)
@@ -461,7 +475,7 @@ def _compose_with_colorbar(filename, img_or_data, *, is_rgb, cmap, norm, vmin, v
     cb.outline.set_edgecolor("w")
     if triad is not None:
         _draw_triad(fig, triad, flip_x=flip_x)
-    fig.savefig(filename, facecolor="black", dpi=100)
+    fig.savefig(filename, facecolor="black", dpi=dpi)
     plt.close(fig)
 
 
@@ -563,6 +577,37 @@ def _save_projection(arr, filename, *, colorbar, cmap, norm, vmin, vmax, label,
         _draw_triad(fig, triad, flip_x=flip_x)
     fig.savefig(filename, facecolor="black", dpi=100)
     plt.close(fig)
+
+
+def projection_image(data, filename, *, field="density", unit="", label=None,
+                     cmap="twilight",
+                     norm="log", vmin=None, vmax=None, linthresh=1.0,
+                     annotate=None, azimuth=0.0, elevation=20.0,
+                     rot_axis=(0.0, 0.0, 1.0), axis_triad=False, flip_x=False,
+                     scalebar_frac=None, scalebar_label=None, output_size=None,
+                     dpi=100, annotation_color="w", scalebar_color="w",
+                     points=None, point_color="black", point_size=16):
+    """Render a precomputed 2-D projection with richio's movie styling.
+
+    This exposes the presentation layer used by projection-mode
+    :func:`volume_image` for projections produced by another gridding backend.
+    Bounds are linear field values even when ``norm="log"``.
+    """
+    arr = np.asarray(data, dtype="float64")
+    if vmin is None or vmax is None:
+        auto_lo, auto_hi = _auto_bounds(arr, log=(norm == "log"))
+        vmin = auto_lo if vmin is None else vmin
+        vmax = auto_hi if vmax is None else vmax
+    triad = _camera_basis(azimuth, elevation, rot_axis, 0.0) if axis_triad else None
+    _compose_with_colorbar(
+        filename, arr, is_rgb=False, cmap=cmap, norm=norm, vmin=vmin, vmax=vmax,
+        label=label or _projection_label(field, unit), linthresh=linthresh,
+        annotate=annotate,
+        triad=triad, flip_x=flip_x, scalebar_frac=scalebar_frac,
+        scalebar_label=scalebar_label, output_size=output_size, dpi=dpi,
+        annotation_color=annotation_color, scalebar_color=scalebar_color,
+        points=points, point_color=point_color, point_size=point_size,
+    )
 
 
 def _projection_label(field, unit, weighted=False):
@@ -957,24 +1002,81 @@ def _render_frames_parallel(
     return sorted(frame_paths)
 
 
-def _encode_movie(frames_dir, n_frames, filename, fps, verbose=True):
-    """Stitch ``frame_*.png`` in *frames_dir* into a movie via imageio."""
+def encode_movie(frames_dir, n_frames, filename, fps, verbose=True, durations=None):
+    """Encode ``frame_*.png`` as H.264, optionally with unitful frame durations."""
     import imageio.v2 as imageio
 
     paths = [os.path.join(frames_dir, f"frame_{i:05d}.png") for i in range(n_frames)]
-    paths = [p for p in paths if os.path.exists(p)]
-    if not paths:
-        raise FileNotFoundError(f"No frames found in {frames_dir} to encode.")
+    missing = [p for p in paths if not os.path.isfile(p) or os.path.getsize(p) == 0]
+    if missing:
+        raise RuntimeError(
+            f"Refusing to encode: {len(missing)} of {n_frames} frames are missing or empty."
+        )
 
-    writer = imageio.get_writer(filename, fps=fps)
-    try:
-        for p in paths:
-            writer.append_data(imageio.imread(p))
-    finally:
-        writer.close()
+    os.makedirs(os.path.dirname(os.path.abspath(filename)), exist_ok=True)
+    if durations is None:
+        writer = imageio.get_writer(
+            filename, fps=fps, codec="libx264", pixelformat="yuv420p",
+            macro_block_size=2,
+            ffmpeg_params=["-crf", "17", "-movflags", "+faststart"],
+        )
+        try:
+            for p in paths:
+                writer.append_data(imageio.imread(p))
+        finally:
+            writer.close()
+    else:
+        _encode_vfr(paths, filename, durations)
     if verbose:
         print(f"[richio.render] encoded {len(paths)} frames -> {filename}", flush=True)
     return filename
+
+
+def _encode_vfr(paths, filename, durations):
+    """Encode every source frame once with physical-time presentation stamps."""
+    import subprocess
+    import tempfile
+
+    import imageio_ffmpeg
+
+    try:
+        seconds = np.asarray(durations.to_value("s"), dtype="float64")
+    except AttributeError as exc:
+        raise TypeError("durations must be a unitful time quantity") from exc
+    if seconds.shape != (len(paths),) or np.any(~np.isfinite(seconds)) or np.any(seconds <= 0):
+        raise ValueError("durations must contain one positive finite time per frame")
+
+    def quote(path):
+        return "'" + os.path.abspath(path).replace("'", "'\\''") + "'"
+
+    manifest = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".ffconcat", dir=os.path.dirname(paths[0]), delete=False
+        ) as stream:
+            manifest = stream.name
+            stream.write("ffconcat version 1.0\n")
+            for path, duration in zip(paths, seconds):
+                stream.write(f"file {quote(path)}\noption framerate 1000000\n")
+                stream.write(f"duration {duration:.9f}\n")
+            # A repeated final path supplies the timestamp needed to honour its duration.
+            stream.write(f"file {quote(paths[-1])}\noption framerate 1000000\n")
+        subprocess.run(
+            [
+                imageio_ffmpeg.get_ffmpeg_exe(), "-y", "-f", "concat", "-safe", "0",
+                "-i", manifest, "-fps_mode", "vfr", "-c:v", "libx264", "-pix_fmt",
+                "yuv420p", "-crf", "17", "-movflags", "+faststart", os.fspath(filename),
+            ],
+            check=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+        )
+    finally:
+        if manifest is not None and os.path.exists(manifest):
+            os.remove(manifest)
+
+
+_encode_movie = encode_movie  # Backward-compatible private name.
 
 
 def _cleanup_frames(frames_dir):

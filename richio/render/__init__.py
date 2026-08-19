@@ -57,11 +57,15 @@ __all__ = [
     "volume_image",
     "volume_movie",
     "evolution_movie",
+    "projection_image",
+    "encode_movie",
 ]
 
 
 def __getattr__(name):
-    if name in ("to_yt", "volume_image", "volume_movie"):
+    if name in (
+        "to_yt", "volume_image", "volume_movie", "projection_image", "encode_movie"
+    ):
         from richio.render import yt_backend
 
         return getattr(yt_backend, name)
