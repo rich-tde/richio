@@ -39,11 +39,7 @@ def _build_h5_aliases():
     :returns: Mapping from canonical HDF5 key to its list of aliases.
     :rtype: dict[str, list[str]]
     """
-    return {
-        k: v["aliases"]
-        for k, v in FIELD_REGISTRY.items()
-        if not v.get("npy_only", False)
-    }
+    return {k: v["aliases"] for k, v in FIELD_REGISTRY.items() if not v.get("npy_only", False)}
 
 
 def _build_npy_aliases():
@@ -82,7 +78,7 @@ def load(path):
     """
     path = str(path)
     if os.path.isfile(path) and (path.endswith(("h5", "hdf5"))):  # if hdf5 file
-        with h5py.File(path) as f:
+        with h5py.File(path):
             pass
         return SnapshotH5(path)
     elif os.path.isdir(path):  # if a directory
@@ -433,9 +429,9 @@ class Snapshot:
             m = i.shape[0]
             projected_values[a : a + m] = np.sum(data_values[i] * dz_values, axis=-1)
 
-        projected_data = u.unyt_array(
-            projected_values, data.units * zspace.units
-        ).in_base(unit_system)
+        projected_data = u.unyt_array(projected_values, data.units * zspace.units).in_base(
+            unit_system
+        )
 
         return projected_data, xspace, yspace
 
@@ -494,15 +490,9 @@ class Snapshot:
         except TypeError:
             nx = ny = nz = res
 
-        xspace = _grid_axis(
-            x0, x1, nx, spacing[0], sinh_scale[0], endpoint=endpoint
-        )
-        yspace = _grid_axis(
-            y0, y1, ny, spacing[1], sinh_scale[1], endpoint=endpoint
-        )
-        zspace = _grid_axis(
-            z0, z1, nz, spacing[2], sinh_scale[2], endpoint=endpoint
-        )
+        xspace = _grid_axis(x0, x1, nx, spacing[0], sinh_scale[0], endpoint=endpoint)
+        yspace = _grid_axis(y0, y1, ny, spacing[1], sinh_scale[1], endpoint=endpoint)
+        zspace = _grid_axis(z0, z1, nz, spacing[2], sinh_scale[2], endpoint=endpoint)
         coords = np.asarray(np.stack([X, Y, Z], axis=-1), dtype="float64")
         return coords, source_indices, xspace, yspace, zspace
 
@@ -582,9 +572,7 @@ class Snapshot:
 
         tree = KDTree(coords)
         i_local = np.empty((nx, ny, nz), dtype=np.intp)
-        for a, idx in _iter_3d_nearest_slabs(
-            tree, xspace, yspace, zspace, workers=workers
-        ):
+        for a, idx in _iter_3d_nearest_slabs(tree, xspace, yspace, zspace, workers=workers):
             i_local[a : a + idx.shape[0]] = idx
 
         # Map local indices back to absolute indices in the original particle array
@@ -709,9 +697,7 @@ class Snapshot:
             np.stack([grid_x, grid_y, grid_z], axis=-1)
         )  # (nx, ny, 1, 3) → (nx, ny, 3)
 
-        i_local = _kdtree_interpolate(
-            coords=coords, grid_coords=grid_coords, workers=workers
-        )
+        i_local = _kdtree_interpolate(coords=coords, grid_coords=grid_coords, workers=workers)
 
         # Map local indices back to absolute indices in the original particle array
         i = np.where(mask)[0][i_local]
@@ -881,11 +867,7 @@ class Snapshot:
         # Attach code-length units to any bare-number endpoint, mirroring the
         # `_as_len` handling in `to_3dgrid`, then express both in the cell units.
         def _as_len(v):
-            return (
-                v.to(length_unit)
-                if isinstance(v, u.unyt_quantity)
-                else v * units.lscale
-            )
+            return v.to(length_unit) if isinstance(v, u.unyt_quantity) else v * units.lscale
 
         p0 = u.unyt_array([_as_len(c) for c in p0]).to(length_unit)
         p1 = u.unyt_array([_as_len(c) for c in p1]).to(length_unit)
@@ -896,15 +878,66 @@ class Snapshot:
         distance = t * float(np.linalg.norm((p1 - p0).value)) * length_unit  # (res,)
 
         src = np.stack([np.asarray(Xc), np.asarray(Yc), np.asarray(Zc)], axis=-1)
-        i_local = _kdtree_interpolate(
-            coords=src, grid_coords=np.asarray(coords), workers=workers
-        )
+        i_local = _kdtree_interpolate(coords=src, grid_coords=np.asarray(coords), workers=workers)
 
         # Map local indices back to absolute indices in the original array.
         i = np.where(selection)[0][i_local] if selection is not None else i_local
 
         values = self._get_data(data)[i].in_base(unit_system)
         return coords, distance, values
+
+    def nearest_indices(
+        self,
+        points: ArrayLike,
+        X: str | ArrayLike = "X",
+        Y: str | ArrayLike = "Y",
+        Z: str | ArrayLike = "Z",
+        selection: ArrayLike | None = None,
+        workers: int = 1,
+    ):
+        """Return the nearest simulation-cell index for arbitrary 3-D points.
+
+        ``points`` may have any leading shape, but its final dimension must be
+        ``(x, y, z)``. Bare coordinates use RICH code-length units; unitful
+        coordinates are converted to the cell-coordinate units. Returned
+        indices have the leading shape of ``points`` and always refer to the
+        original snapshot, including when ``selection`` restricts the tree.
+
+        :param points: Query coordinates with shape ``(..., 3)``.
+        :param X: x-coordinates of cell centres. Defaults to ``"X"``.
+        :param Y: y-coordinates of cell centres. Defaults to ``"Y"``.
+        :param Z: z-coordinates of cell centres. Defaults to ``"Z"``.
+        :param selection: Boolean cell mask. Defaults to ``None`` (all cells).
+        :param workers: Threads for the k-d tree query. Defaults to ``1``.
+        :returns: Absolute simulation-cell indices with shape ``points.shape[:-1]``.
+        :rtype: :class:`numpy.ndarray`
+        """
+        Xc = self._get_data(X)
+        Yc = self._get_data(Y)
+        Zc = self._get_data(Z)
+        length_unit = Xc.units
+
+        if isinstance(points, u.unyt_array):
+            query = points.to_value(length_unit)
+        else:
+            query = (np.asarray(points) * units.lscale).to_value(length_unit)
+        if query.ndim < 2 or query.shape[-1] != 3:
+            raise ValueError("points must have shape (..., 3).")
+
+        if selection is not None:
+            mask = _selection_mask(selection, len(Xc))
+            Xc, Yc, Zc = Xc[mask], Yc[mask], Zc[mask]
+
+        source = np.stack(
+            [Xc.to_value(length_unit), Yc.to_value(length_unit), Zc.to_value(length_unit)],
+            axis=-1,
+        )
+        local_indices = _kdtree_interpolate(
+            coords=source,
+            grid_coords=query,
+            workers=workers,
+        )
+        return np.where(mask)[0][local_indices] if selection is not None else local_indices
 
     def clip(
         self,
@@ -998,9 +1031,7 @@ class Snapshot:
                 sel &= idx_mask
 
         if box is None and mask is None:
-            raise ValueError(
-                "No region specified: pass `box`, `center`+`width`, or `mask`."
-            )
+            raise ValueError("No region specified: pass `box`, `center`+`width`, or `mask`.")
 
         # When no explicit box was given, frame the clip on the bounding box of
         # the selected cells so projections/slices default to the region.
@@ -1126,9 +1157,7 @@ class SnapshotH5(Snapshot):
                 try:
                     n = len(f["X"])
                 except KeyError:
-                    raise Exception(
-                        "Failed to get length. Neither field X nor rank0/X exists."
-                    )
+                    raise Exception("Failed to get length. Neither field X nor rank0/X exists.")
 
         return n
 
@@ -1144,7 +1173,6 @@ class SnapshotH5(Snapshot):
         """
 
         def _list_group(f, keys, prefix="") -> list:
-
             # recursively list all datasets
             for key in list(f.keys()):
                 if prefix == "":
@@ -1385,9 +1413,7 @@ def _grid_axis(start, stop, size, spacing, sinh_scale, *, endpoint=False):
     if spacing == "linear":
         return np.linspace(start, stop, size, endpoint=endpoint)
     if spacing != "sinh":
-        raise ValueError(
-            f"Unsupported grid spacing {spacing!r}; choose 'linear' or 'sinh'."
-        )
+        raise ValueError(f"Unsupported grid spacing {spacing!r}; choose 'linear' or 'sinh'.")
     if sinh_scale is None:
         raise ValueError("sinh_scale is required for every axis using sinh spacing.")
 
@@ -1488,9 +1514,7 @@ def _selection_mask(selection, size):
     """Return a validated one-dimensional boolean cell-selection mask."""
     mask = np.asarray(selection, dtype=bool)
     if mask.shape != (size,):
-        raise ValueError(
-            f"selection must have shape ({size},), received {mask.shape}."
-        )
+        raise ValueError(f"selection must have shape ({size},), received {mask.shape}.")
     if not np.any(mask):
         raise ValueError("Cannot build a k-d tree from an empty cell selection.")
     return mask
