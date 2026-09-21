@@ -1085,11 +1085,10 @@ class SnapshotH5(Snapshot):
         """
         with h5py.File(self.path, "r") as f:
             maxrank = 0
-            for key in f.keys():
+            for key in f:
                 if "rank" in key:
                     rank = int(key[4:])
-                    if maxrank < rank:
-                        maxrank = rank  # get the max rank
+                    maxrank = max(maxrank, rank)  # get the max rank
 
         maxrank += 1  # number of rank (starts from 1) is max rank (starts from 0) + 1
         return maxrank
