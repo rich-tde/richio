@@ -119,16 +119,14 @@ class Snapshot:
     def _get_snapnum(self):
         """Extract the snapshot index from :attr:`path`.
 
-        Searches for the pattern ``snap_<digits>`` anywhere in the path string
-        and returns the first match as an integer.
+        Searches for ``snap_<digits>`` or ``snap_full_<digits>`` anywhere in the
+        path string and returns the first match as an integer.
 
         :returns: Snapshot index, or ``-1`` if the pattern is not found.
         :rtype: int
         """
 
-        # pattern to match 'snap_' followed by digits
-        pattern = r"snap_(\d+)"  # (...) matches whatever regular expressions inside the parenthesis, \d matches 0-9, and + matches many digits
-        match = re.search(pattern, self.path)  # search for patterns all inside the path
+        match = re.search(r"snap_(?:full_)?(\d+)", self.path)
 
         if match:
             return int(match.group(1))
