@@ -66,14 +66,83 @@ both.
 
 ## Reading only part of a field
 
-To grab a subset without reading the whole array, put a slice or a mask after the
-field name, separated by a comma:
+To select part of a field, put a slice or a mask after the field name, separated
+by a comma:
 
 ```python
 snap["density", 1:10]     # the first nine values
 snap["density", ::-1]     # reversed
 snap["density", mask]     # only the cells where `mask` is True
 ```
+
+For HDF5 snapshots, this field-selection form reads the full field before
+selecting its values. To read all fields for just one particle, use integer
+snapshot indexing instead.
+
+## Reading particles
+
+An integer selects a particle by its position in the snapshot, not by its ID:
+
+```python
+particle = snap[2]             # a Particles object containing the third row
+particle["density"]           # shape (1,), with units
+particle["time"]              # shape (1,), if the snapshot stores scalar Time
+dict(particle)                # canonical field names -> arrays
+```
+
+This reads only the selected row of each stored per-particle field and includes
+the snapshot's scalar `Time` when available. Other snapshot metadata is excluded.
+HDF5 access reads entries directly from the owning rank; NumPy arrays are
+memory-mapped and text files are scanned as needed. Returned values are detached
+from the files. Clipped snapshots use positions within the clip, including nested
+clips.
+
+Python and NumPy integers are accepted, including negative indices (`snap[-1]`
+reads the last particle). Out-of-range indices raise `IndexError`; booleans are
+not accepted. Lists, masks, and slices are not supported for snapshot particle
+indexing; the existing field-selection syntax above is unchanged.
+
+Use `rio.Particles` to collect selected rows, for example to follow an ID across
+snapshots. Matching IDs is the caller's responsibility, and may require reading
+the full ID field:
+
+```python
+import numpy as np
+import richio as rio
+
+particles = rio.Particles()
+target_id = 42
+for snap in (snap_a, snap_b):
+    matches = np.flatnonzero(snap["ID"] == target_id)
+    if matches.size != 1:
+        raise ValueError(f"Expected one match for ID {target_id}, got {matches.size}")
+    particles.append(snap[matches[0]])
+
+particles["density"]          # shape (2,), in insertion order
+particles["time"]             # times from the two snapshots
+particles[0]                  # Particles with one row
+particles[0]["density"]       # shape (1,)
+particles[:2]                 # Particles with two rows
+dict(particles)               # e.g. {"Density": ..., "Time": ..., "ID": ...}
+```
+
+The particle axis is always retained: scalar fields have shape `(N,)` and vector
+fields have shape `(N, ...)`. Registered fields use the same canonical names in
+both formats, so a NumPy `Den` field becomes `Density`. Column access accepts the
+usual aliases; unknown field names are preserved. Unitful columns are combined
+in the first row's units, converting compatible units as needed. Unitless columns
+remain NumPy arrays. Mixing unitful and unitless values, incompatible units, or
+incompatible shapes raises an error.
+
+Iteration yields one-row `Particles` objects. You can construct a collection from
+an iterable of these objects, call `append` with one row, or use `extend` to add
+all rows from another collection. Appending an empty or multi-row collection
+raises `ValueError`.
+
+`particles.keys()` returns the ordered union of canonical field names.
+`dict(particles)` reads each of those columns; a field missing from any row raises
+`KeyError`, as does direct access to a missing column. `dict(rio.Particles())`
+returns `{}`, while field access on an empty collection raises `ValueError`.
 
 ## Two ready-made masks
 

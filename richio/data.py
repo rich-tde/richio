@@ -13,6 +13,7 @@
 #  You should have received a copy of the EUPL in an/all official language(s) of
 #  the European Union along with RICHIO.  If not, see <https://eupl.eu>.
 
+from decimal import Decimal
 import os
 import re
 import warnings
@@ -25,6 +26,7 @@ from rich.table import Table
 import unyt as u
 
 from richio.config import FIELD_REGISTRY
+from richio.particles import Particles, _canonical_field, _particle_index
 from richio.plots import SnapshotPlotter
 from richio.units import units
 
@@ -170,6 +172,11 @@ class Snapshot:
                   or *key* unchanged if not found.
         :rtype: str
         """
+        if not isinstance(key, str):
+            raise TypeError(
+                "Use a field name, a (field, selection) tuple, or a single integer particle "
+                "index. For an array containing exactly one index, use indices.item()."
+            )
         return self.__class__._alias_to_canonical.get(key, key)
 
     def mask_star_ratio(self) -> np.ndarray:
@@ -1095,8 +1102,8 @@ class SnapshotH5(Snapshot):
         maxrank += 1  # number of rank (starts from 1) is max rank (starts from 0) + 1
         return maxrank
 
-    def __getitem__(self, key) -> u.unyt_array:
-        """Return a field from the snapshot as a unit-bearing array.
+    def __getitem__(self, key) -> u.unyt_array | Particles:
+        """Return a unit-bearing field, or one particle for an integer key.
 
         Concatenates data across all MPI ranks.  Aliases are resolved to their
         canonical names before the HDF5 lookup.  For fields stored at the root
@@ -1108,12 +1115,19 @@ class SnapshotH5(Snapshot):
             snap['density']          # full array
             snap['density', 1:10]    # rows 1–9
             snap['density', ::-1]    # reversed
+            snap[2]                 # one-particle Particles object
 
-        :param key: Field name (or alias), or a tuple ``(field, slice)``.
-        :returns: Field data with physical units attached.
-        :rtype: :class:`unyt.unyt_array`
+        Integer access reads only the selected particle's dataset entries.
+
+        :param key: Field name (or alias), a tuple ``(field, slice)``, or a
+                    positional particle index.
+        :returns: Field data with units, or a detached :class:`Particles` object.
         :raises KeyError: If the field is not found in the HDF5 file.
+        :raises IndexError: If a particle index is out of bounds.
         """
+        if isinstance(key, (int, np.integer, np.bool_)):
+            return self._read_particle(key)
+
         # Parse key and slice
         if isinstance(key, tuple):
             field, idx = key[0], key[1]
@@ -1137,6 +1151,46 @@ class SnapshotH5(Snapshot):
         if np.ndim(arr) == 0:
             return arr
         return arr[idx]
+
+    def _read_particle(self, index) -> Particles:
+        """Read a global particle row without loading whole datasets."""
+        record = {}
+        with h5py.File(self.path, "r") as f:
+            ranked = "rank0" in f
+            counts = [len(f[f"rank{i}/X"]) for i in range(self.rank)] if ranked else [len(f["X"])]
+            size = sum(counts)
+            index = _particle_index(index, size)
+
+            def read_group(group, row, count, prefix=""):
+                for name, obj in group.items():
+                    # Root metadata must not cause traversal of other ranks.
+                    if not prefix and re.fullmatch(r"rank\d+", name):
+                        continue
+                    field = f"{prefix}/{name}" if prefix else name
+                    if isinstance(obj, h5py.Group):
+                        read_group(obj, row, count, field)
+                        continue
+                    canon = _canonical_field(field)
+                    if canon in ("Box", "Cycle"):
+                        continue
+                    if canon == "Time":
+                        if obj.size == 1:
+                            record[field] = np.asarray(
+                                obj[()] if not obj.shape else obj[0]
+                            ).reshape(())
+                    elif obj.shape and obj.shape[0] == count:
+                        record[field] = obj[row]
+
+            read_group(f, index, size)
+            if ranked:
+                local_index = index
+                for rank, count in enumerate(counts):
+                    if local_index < count:
+                        read_group(f[f"rank{rank}"], local_index, count)
+                        break
+                    local_index -= count
+
+        return Particles._from_record(record)
 
     def __len__(self) -> int:
         """Return the total number of cells across all MPI ranks.
@@ -1198,6 +1252,46 @@ class SnapshotH5(Snapshot):
         return keys
 
 
+def _text_rows(path):
+    """Yield data lines from a whitespace-delimited field file."""
+    with open(path) as stream:
+        for line in stream:
+            line = line.split("#", 1)[0].strip()
+            if line:
+                yield line
+
+
+def _field_file_shape(path):
+    """Inspect an NPY header or count text rows without loading a field."""
+    if path.endswith(".npy"):
+        return np.load(path, mmap_mode="r").shape
+    rows, columns = 0, 0
+    for line in _text_rows(path):
+        width = len(line.split())
+        if rows and width != columns:
+            raise ValueError(f"Inconsistent number of columns in {path}.")
+        rows += 1
+        columns = width
+    return (rows,) if columns <= 1 else (rows, columns)
+
+
+def _field_file_row(path, index, *, integer=False):
+    """Copy one NPY row, or scan a text field to its requested data row."""
+    if path.endswith(".npy"):
+        return np.array(np.load(path, mmap_mode="r")[index], copy=True)
+    for row, line in enumerate(_text_rows(path)):
+        if row == index:
+            if integer:
+                # Parse IDs without an intermediate float, including integer
+                # values written in scientific notation by text exporters.
+                values = [Decimal(token) for token in line.split()]
+                if any(value != value.to_integral_value() for value in values):
+                    raise ValueError(f"Non-integer particle ID in {path}.")
+                return np.array([int(value) for value in values]).squeeze()
+            return np.loadtxt([line])
+    raise IndexError(f"Particle index {index} is out of bounds for {path}.")
+
+
 class SnapshotNPY(Snapshot):
     """RICH snapshot backed by a directory of per-field NumPy files.
 
@@ -1243,8 +1337,8 @@ class SnapshotNPY(Snapshot):
 
         return keys
 
-    def __getitem__(self, key) -> u.unyt_array:
-        """Return a field from the snapshot directory as a unit-bearing array.
+    def __getitem__(self, key) -> u.unyt_array | Particles:
+        """Return a unit-bearing field, or one particle for an integer key.
 
         Resolves aliases, then loads ``<FieldName>_<snapnum>.npy`` (or
         ``.txt`` as a fallback) using memory-mapping for efficiency.
@@ -1253,13 +1347,21 @@ class SnapshotNPY(Snapshot):
 
             snap['density']          # full array
             snap['density', 1:10]    # rows 1–9
+            snap[2]                 # one-particle Particles object
 
-        :param key: Field name (or alias), or a tuple ``(field, slice)``.
-        :returns: Field data with physical units attached.
-        :rtype: :class:`unyt.unyt_array`
+        Integer access copies only the selected memory-mapped row. Text
+        fields are scanned without materializing complete arrays.
+
+        :param key: Field name (or alias), a tuple ``(field, slice)``, or a
+                    positional particle index.
+        :returns: Field data with units, or a detached :class:`Particles` object.
         :raises FileNotFoundError: If neither ``.npy`` nor ``.txt`` file is
                                    found for the requested field.
+        :raises IndexError: If a particle index is out of bounds.
         """
+        if isinstance(key, (int, np.integer, np.bool_)):
+            return self._read_particle(key)
+
         # Parse key and slice
         if isinstance(key, tuple):
             field, idx = key[0], key[1]
@@ -1296,12 +1398,53 @@ class SnapshotNPY(Snapshot):
 
         return arr
 
+    def _read_particle(self, index) -> Particles:
+        """Read matching field files, preferring NPY over text for each field."""
+        files = {}
+        suffix = f"_{self.snapnum}"
+        for name in sorted(os.listdir(self.path)):
+            stem, extension = os.path.splitext(name)
+            if extension in (".npy", ".txt") and stem.endswith(suffix):
+                # Sorting puts .npy first; remove only the snapshot suffix so
+                # field names containing underscores remain intact.
+                files.setdefault(stem[: -len(suffix)], os.path.join(self.path, name))
+
+        if "X" not in files:
+            raise FileNotFoundError(f"No X coordinate field found in {self.path}.")
+        shape = _field_file_shape(files["X"])
+        if not shape:
+            raise ValueError("The X coordinate field must have a particle axis.")
+        size = shape[0]
+        index = _particle_index(index, size)
+        record = {}
+        for field, path in files.items():
+            canon = _canonical_field(field)
+            if canon in ("Box", "Cycle"):
+                continue
+            shape = _field_file_shape(path)
+            if canon == "Time":
+                if np.prod(shape) == 1:
+                    value = _field_file_row(path, 0 if shape else ())
+                    record[field] = np.asarray(value).reshape(())
+            elif shape and shape[0] == size:
+                record[field] = _field_file_row(path, index, integer=canon == "ID")
+        return Particles._from_record(record)
+
     def __len__(self) -> int:
-        """Return the number of cells by reading the length of the first field.
+        """Return the coordinate row count, ignoring snapshot metadata.
+
+        Legacy directories without ``X`` retain the first-field fallback.
 
         :returns: Cell count.
         :rtype: int
         """
+        for extension in ("npy", "txt"):
+            path = os.path.join(self.path, f"X_{self.snapnum}.{extension}")
+            if os.path.isfile(path):
+                shape = _field_file_shape(path)
+                if not shape:
+                    raise ValueError("The X coordinate field must have a particle axis.")
+                return shape[0]
         for key in self.keys():
             length = len(self[key])
             break
@@ -1349,18 +1492,22 @@ class ClippedSnapshot(Snapshot):
         """Resolve *key* to a canonical field name via the parent's alias table."""
         return self.parent._resolve_field_name(key)
 
-    def __getitem__(self, key) -> u.unyt_array:
-        """Return a field restricted to the clipped region.
+    def __getitem__(self, key) -> u.unyt_array | Particles:
+        """Return a clipped field, or one particle at a local integer index.
 
         Per-cell fields (length equal to the parent's cell count) are indexed
         with the selection mask; the ``Box`` field returns the clip box; all
         other metadata (e.g. scalar ``Time``/``Cycle``) passes through
         unchanged.
 
-        :param key: Field name (or alias), or a tuple ``(field, slice)``.
-        :returns: Masked field data with physical units attached.
-        :rtype: :class:`unyt.unyt_array`
+        :param key: Field name (or alias), a tuple ``(field, slice)``, or a
+                    positional index within the clip.
+        :returns: Masked field data with units, or a detached :class:`Particles`.
         """
+        if isinstance(key, (int, np.integer, np.bool_)):
+            index = _particle_index(key, len(self))
+            return self.parent[np.flatnonzero(self.mask)[index]]
+
         if isinstance(key, tuple):
             field, idx = key[0], key[1]
         else:
