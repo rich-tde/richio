@@ -86,6 +86,7 @@ nav:
       - Slices and projections: guide/slices-and-projections.md
       - Plotting: guide/plotting.md
       - Opacity: guide/opacity.md
+      - Equation of state: guide/eos.md
       - Volume rendering (optional): guide/volume-rendering.md
       - Shock finding (optional): guide/shock-finding.md
   - API reference:
@@ -94,6 +95,7 @@ nav:
       - richio.config: api/config.md
       - richio.plots: api/plots.md
       - richio.opacity: api/opacity.md
+      - richio.eos: api/eos.md
       - richio.render: api/render.md
       - richio.shockfinder: api/shockfinder.md
   - About:
