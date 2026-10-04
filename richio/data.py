@@ -433,6 +433,8 @@ class Snapshot:
 
         return projected_data, xspace, yspace
 
+    integrate = project
+
     def _prepare_3d_grid(
         self,
         res: int | ArrayLike,
