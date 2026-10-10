@@ -13,17 +13,13 @@
 #  You should have received a copy of the EUPL in an/all official language(s) of
 #  the European Union along with RICHIO.  If not, see <https://eupl.eu>.
 
-from importlib.resources import files
 from typing import Any
-import warnings
 
 from matplotlib.colors import Colormap
 import matplotlib.pyplot as plt
 import numpy as np
 from numpy.typing import ArrayLike
 import unyt as u
-
-from richio.units import units
 
 # from richio.config import FIGURES_DIR, PROCESSED_DATA_DIR
 
@@ -84,9 +80,7 @@ class SnapshotPlotter:
                 slice_coord=0,
                 **kwargs,
             )
-        except (
-            FileNotFoundError
-        ):  # X, Y, Z are not found, do cmx, cmy, cmz (center of mass)
+        except FileNotFoundError:  # X, Y, Z are not found, do cmx, cmy, cmz (center of mass)
             return self.slice(
                 data=data,
                 res=512,
@@ -221,6 +215,7 @@ class SnapshotPlotter:
         workers: int = 8,
         spacing: str | tuple[str, str, str] = "linear",
         sinh_scale: float | u.unyt_quantity | ArrayLike | None = None,
+        central_spacing: float | u.unyt_quantity | ArrayLike | None = None,
         **kwargs,
     ):
         """Compute a column-integrated projection and render it as a plot.
@@ -261,6 +256,11 @@ class SnapshotPlotter:
         :param sinh_scale: Positive central linear scale for sinh-spaced axes.
                            A scalar applies to all axes; a three-element
                            sequence configures physical X, Y, and Z separately.
+        :param central_spacing: Desired smallest interval near coordinate zero
+                                on sinh axes, as an alternative to ``sinh_scale``.
+                                A scalar or physical ``(X, Y, Z)`` sequence;
+                                bare numbers use code lengths, or pass ``unyt``
+                                lengths. See :meth:`~richio.data.Snapshot.to_3dgrid`.
         :param kwargs: Extra keyword arguments forwarded to
                        :func:`~matplotlib.pyplot.pcolormesh`.
         :returns: Tuple ``(ax, im, projected_data)``.
@@ -279,6 +279,7 @@ class SnapshotPlotter:
             workers=workers,
             spacing=spacing,
             sinh_scale=sinh_scale,
+            central_spacing=central_spacing,
         )
 
         ax, im = scalar_map(

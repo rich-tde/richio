@@ -354,6 +354,7 @@ class Snapshot:
         workers: int = 8,
         spacing: str | tuple[str, str, str] = "linear",
         sinh_scale: float | u.unyt_quantity | ArrayLike | None = None,
+        central_spacing: float | u.unyt_quantity | ArrayLike | None = None,
     ):
         """Interpolate *data* onto a 3-D grid and integrate (project) along the
         normal axis of *plane*.
@@ -382,13 +383,20 @@ class Snapshot:
         :param workers: Threads used by the k-d tree query. Defaults to ``8``;
                         use ``1`` for serial execution or ``-1`` for all cores.
         :param spacing: Grid spacing along the physical X, Y, and Z axes.
-                        Either ``"linear"`` for every axis or a three-element
-                        sequence containing ``"linear"`` / ``"sinh"``.
+                        Either ``"linear"`` / ``"sinh"`` for every axis or a
+                        three-element sequence configuring each axis.
                         Defaults to ``"linear"``.
         :param sinh_scale: Positive central linear scale for every ``"sinh"``
                            axis. A scalar applies to all axes; a three-element
                            sequence sets physical X, Y, and Z separately. Bare
                            numbers use RICH code-length units.
+        :param central_spacing: Desired smallest interval near coordinate zero
+                                on sinh axes, as an alternative to ``sinh_scale``.
+                                A scalar applies to all sinh axes; a tuple sets
+                                physical X, Y, Z. Bare numbers use code-length
+                                units; ``unyt`` lengths are also accepted.
+                                Defaults to ``None``. See :meth:`to_3dgrid` for
+                                bounds, resolution, and spacing requirements.
         :returns: Tuple ``(projected_data, xspace, yspace)`` where
                   *projected_data* has shape ``(nx-1, ny-1)`` and *xspace* /
                   *yspace* are 1-D coordinate arrays.
@@ -405,6 +413,7 @@ class Snapshot:
             plane=plane,
             spacing=spacing,
             sinh_scale=sinh_scale,
+            central_spacing=central_spacing,
         )
         data = self._get_data(data)
 
@@ -454,6 +463,7 @@ class Snapshot:
         plane: str | None = None,
         spacing: str | tuple[str, str, str] = "linear",
         sinh_scale: float | u.unyt_quantity | ArrayLike | None = None,
+        central_spacing: float | u.unyt_quantity | ArrayLike | None = None,
     ):
         """Prepare source coordinates and regular axes for 3-D queries."""
         X = self._get_data(X)
@@ -483,6 +493,7 @@ class Snapshot:
 
         spacing = _axis_options(spacing, "spacing")
         sinh_scale = _axis_options(sinh_scale, "sinh_scale")
+        central_spacing = _axis_options(central_spacing, "central_spacing")
 
         if plane is not None:
             X, Y, Z = _parse_plane(plane, X, Y, Z)
@@ -491,15 +502,40 @@ class Snapshot:
             order = _plane_indices(plane)
             spacing = tuple(spacing[index] for index in order)
             sinh_scale = tuple(sinh_scale[index] for index in order)
+            central_spacing = tuple(central_spacing[index] for index in order)
 
         try:
             nx, ny, nz = res[0], res[1], res[2]
         except TypeError:
             nx = ny = nz = res
 
-        xspace = _grid_axis(x0, x1, nx, spacing[0], sinh_scale[0], endpoint=endpoint)
-        yspace = _grid_axis(y0, y1, ny, spacing[1], sinh_scale[1], endpoint=endpoint)
-        zspace = _grid_axis(z0, z1, nz, spacing[2], sinh_scale[2], endpoint=endpoint)
+        xspace = _grid_axis(
+            x0,
+            x1,
+            nx,
+            spacing[0],
+            sinh_scale[0],
+            endpoint=endpoint,
+            central_spacing=central_spacing[0],
+        )
+        yspace = _grid_axis(
+            y0,
+            y1,
+            ny,
+            spacing[1],
+            sinh_scale[1],
+            endpoint=endpoint,
+            central_spacing=central_spacing[1],
+        )
+        zspace = _grid_axis(
+            z0,
+            z1,
+            nz,
+            spacing[2],
+            sinh_scale[2],
+            endpoint=endpoint,
+            central_spacing=central_spacing[2],
+        )
         coords = np.asarray(np.stack([X, Y, Z], axis=-1), dtype="float64")
         return coords, source_indices, xspace, yspace, zspace
 
@@ -516,13 +552,14 @@ class Snapshot:
         workers: int = 8,
         spacing: str | tuple[str, str, str] = "linear",
         sinh_scale: float | u.unyt_quantity | ArrayLike | None = None,
+        central_spacing: float | u.unyt_quantity | ArrayLike | None = None,
     ):
-        """Interpolate cell centres onto a regular 3-D Cartesian grid.
+        r"""Interpolate cell centres onto a 3-D rectilinear grid.
 
         Builds a 3-D rectilinear grid spanning the domain bounds, then uses a
         k-d tree (nearest-neighbour) to find the closest cell for each grid point.
-        Returns absolute indices into the original particle array; used by
-        :meth:`project` to look up field values.
+        Returns absolute indices into the original particle array for looking
+        up field values on the grid.
 
         :param res: Grid resolution — single integer for a cubic grid or a
                     three-element sequence ``(nx, ny, nz)``.
@@ -533,10 +570,9 @@ class Snapshot:
                          from the snapshot's ``box`` field when ``None``.
         :param selection: Boolean mask ``(N,)`` to restrict which cells are
                           used.  Defaults to ``None``.
-        :param endpoint: If ``True`` the grid spacing is
-                         ``(hi-lo)/(n-1)``; if ``False`` (default) it is
-                         ``(hi-lo)/n`` so the grid never reaches the upper
-                         boundary.
+        :param endpoint: Include the upper boundary if ``True``. If ``False``
+                         (default), omit it. Applies to both linear and sinh
+                         spacing.
         :param plane: Projection plane, e.g. ``"xy"``, ``"xz"``, ``"yz"``.
                       Permutes the coordinate axes so that the third axis (the
                       integration axis for :meth:`project`) matches the normal
@@ -544,17 +580,93 @@ class Snapshot:
                       axis order unchanged (integrates along Z).
         :param workers: Threads used by the k-d tree query. Defaults to ``8``;
                         use ``1`` for serial execution or ``-1`` for all cores.
-        :param spacing: Grid spacing along physical X, Y, and Z. Pass a
-                        three-element sequence of ``"linear"`` / ``"sinh"``
-                        values to configure axes separately.
-        :param sinh_scale: Positive central scale for ``"sinh"`` axes. A
-                           scalar applies to all axes; a three-element sequence
-                           configures physical X, Y, and Z separately.
+        :param spacing: Grid spacing along physical X, Y, and Z. A single
+                        ``"linear"`` (default) or ``"sinh"`` applies to all
+                        axes; a three-element sequence configures each axis.
+        :param sinh_scale: Length scale ``a`` in ``z = a * sinh(t)``, where
+                           ``t = asinh(z / a)`` is sampled uniformly::
+
+                               t = linspace(asinh(zmin / a), asinh(zmax / a),
+                                            nz, endpoint=endpoint)
+                               z = a * sinh(t)
+
+                           The same equation applies to X and Y. Spacing is
+                           nearly linear for ``abs(z) << a`` and logarithmic
+                           for ``abs(z) >> a``; smaller ``a`` concentrates more
+                           points near coordinate zero, not the box midpoint.
+
+                           For bounds ``[-Z, Z]``, even ``nz``, and
+                           ``endpoint=False``, choose ``a`` by solving for the
+                           desired spacing ``dz0`` next to zero::
+
+                               dz0 = a * sinh(2 * asinh(Z / a) / nz)
+
+                           For example, ``Z=1000`` and ``nz=512`` require
+                           ``a=4.1422`` for ``dz0=0.1`` (all lengths in the
+                           same units).
+
+                           Each sinh axis requires a finite, positive scale.
+                           A scalar applies to all sinh axes; a
+                           three-element sequence sets physical X, Y, and Z,
+                           even when ``plane`` changes the output axis order.
+                           Bare numbers use RICH code-length units
+                           (``richio.units.units.lscale``); a ``unyt`` length
+                           quantity specifies physical units explicitly.
+                           Ignored on linear axes, where ``None`` is allowed.
+                           Defaults to ``None``.
+        :param central_spacing: Desired smallest grid interval near coordinate
+                                zero on each sinh axis. Computes ``sinh_scale``
+                                automatically by solving
+                                ``min(diff(axis(a))) = central_spacing``.
+                                Pass a scalar or a physical ``(X, Y, Z)`` tuple;
+                                bare values use code-length units and ``unyt``
+                                lengths are accepted. Ignored on linear axes.
+                                Defaults to ``None``. Specify only one of this
+                                parameter and ``sinh_scale`` per sinh axis.
+
+                                Bounds must be finite, increasing, and contain
+                                zero. Requires at least 3 points (4 with
+                                ``endpoint=True``). The target must be finite,
+                                positive, and no larger than the corresponding
+                                linear spacing; equality gives a linear axis.
+                                For asymmetric bounds or odd point counts, zero
+                                need not be sampled: the target still sets the
+                                narrowest returned interval.
         :returns: Tuple ``(i, xspace, yspace, zspace)`` where *i* has shape
                   ``(nx, ny, nz)`` and contains **absolute** indices into the
                   original particle array, so ``snap.density[i]`` gives the
-                  projected field directly.
+                  gridded field directly.
         :rtype: tuple
+
+        Examples, given a loaded snapshot ``snap``::
+
+            # Linear X/Y, sinh Z with 0.1 code-length spacing near zero.
+            i, x, y, z = snap.to_3dgrid(
+                (64, 64, 512),
+                box_size=[-100, -100, -1000, 100, 100, 1000],
+                spacing=("linear", "linear", "sinh"),
+                central_spacing=(None, None, 0.1),
+            )
+
+            # All axes: bounds +/-100 and transition length 10,
+            # both in RICH code-length units.
+            i, x, y, z = snap.to_3dgrid(
+                64,
+                box_size=[-100, -100, -100, 100, 100, 100],
+                spacing="sinh",
+                sinh_scale=10,
+            )
+            density_grid = snap.density[i]  # Shape (64, 64, 64).
+
+            # Only Z uses sinh spacing, with an explicit physical length.
+            # X and Y remain linear; bounds default to the snapshot box.
+            import unyt as u
+
+            i, x, y, z = snap.to_3dgrid(
+                (64, 64, 128),
+                spacing=("linear", "linear", "sinh"),
+                sinh_scale=(None, None, 10 * u.Rsun),
+            )
         """
         coords, source_indices, xspace, yspace, zspace = self._prepare_3d_grid(
             res=res,
@@ -567,6 +679,7 @@ class Snapshot:
             plane=plane,
             spacing=spacing,
             sinh_scale=sinh_scale,
+            central_spacing=central_spacing,
         )
         nx, ny, nz = len(xspace), len(yspace), len(zspace)
 
@@ -1553,15 +1666,79 @@ def _plane_indices(plane):
     return lookup[plane[0]], lookup[plane[1]], lookup[normal]
 
 
-def _grid_axis(start, stop, size, spacing, sinh_scale, *, endpoint=False):
+def _sinh_scale_from_spacing(start, stop, size, central_spacing, *, endpoint=False):
+    """Solve for the sinh scale giving the smallest sampled interval requested.
+
+    Bounds must contain zero. Bare spacing values use code-length units.
+    Return a unitful scale, or ``None`` when the target is the linear spacing.
+    The scalar root solve uses dimensionless lengths and inverse scale ``L/a``
+    to make the result independent of the chosen physical units.
+    """
+    from scipy.optimize import brentq
+
+    unit = start.units
+    if not isinstance(central_spacing, u.unyt_quantity):
+        central_spacing = central_spacing * units.lscale
+    target = float(central_spacing.to_value(unit))
+    lo, hi = float(start.to_value(unit)), float(stop.to_value(unit))
+    if not np.isfinite(target) or target <= 0:
+        raise ValueError("central_spacing must be finite and strictly positive.")
+    if not (np.isfinite(lo) and np.isfinite(hi) and lo < hi and lo <= 0 <= hi):
+        raise ValueError("central_spacing requires finite, increasing bounds containing zero.")
+    minimum_size = 4 if endpoint else 3
+    if size < minimum_size:
+        raise ValueError(
+            f"central_spacing requires at least {minimum_size} points with endpoint={endpoint}."
+        )
+
+    linear_spacing = (hi - lo) / (size - 1 if endpoint else size)
+    if np.isclose(target, linear_spacing, rtol=1e-12, atol=0):
+        return None
+    if target > linear_spacing:
+        raise ValueError("central_spacing cannot exceed the linear grid spacing.")
+
+    extent = max(abs(lo), abs(hi))
+    lo, hi, target = lo / extent, hi / extent, target / extent
+
+    def residual(inverse_scale):
+        if inverse_scale == 0:
+            return linear_spacing / extent - target
+        transformed = np.linspace(
+            np.arcsinh(lo * inverse_scale),
+            np.arcsinh(hi * inverse_scale),
+            size,
+            endpoint=endpoint,
+        )
+        axis = np.sinh(transformed) / inverse_scale
+        return np.min(np.diff(axis)) - target
+
+    lower, upper = 0.0, 1.0
+    limit = np.finfo(float).max / 4
+    while residual(upper) > 0:
+        if upper == limit:
+            raise ValueError("central_spacing is too small to resolve for these bounds.")
+        lower, upper = upper, min(2 * upper, limit)
+    inverse_scale = brentq(residual, lower, upper)
+    return u.unyt_quantity(extent / inverse_scale, unit)
+
+
+def _grid_axis(start, stop, size, spacing, sinh_scale, *, endpoint=False, central_spacing=None):
     """Construct a unit-aware linear or sinh-spaced coordinate axis."""
     spacing = str(spacing).lower()
     if spacing == "linear":
         return np.linspace(start, stop, size, endpoint=endpoint)
     if spacing != "sinh":
         raise ValueError(f"Unsupported grid spacing {spacing!r}; choose 'linear' or 'sinh'.")
+    if central_spacing is not None:
+        if sinh_scale is not None:
+            raise ValueError("Specify only one of sinh_scale and central_spacing per sinh axis.")
+        sinh_scale = _sinh_scale_from_spacing(
+            start, stop, size, central_spacing, endpoint=endpoint
+        )
+        if sinh_scale is None:
+            return np.linspace(start, stop, size, endpoint=endpoint)
     if sinh_scale is None:
-        raise ValueError("sinh_scale is required for every axis using sinh spacing.")
+        raise ValueError("sinh_scale or central_spacing is required for every sinh axis.")
 
     unit = start.units
     if isinstance(sinh_scale, u.unyt_quantity):
