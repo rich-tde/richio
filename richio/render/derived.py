@@ -29,9 +29,9 @@ def bernoulli(snap, *, m_bh=1e4, m_star=0.5, r_star=0.47,
               coords=("CMx", "CMy", "CMz"), normalize=True, soft=1e-2):
     """Specific Bernoulli parameter (specific total energy) per cell.
 
-    ``B = -G·M_BH/r + ½v² + e_int + (P + u_rad/3)/ρ``, in code units (G=1,
+    ``B = -G·M_BH/r + ½v² + e_int + (P + 4u_rad/3)/ρ``, in code units (G=1,
     M☉/R☉).  Here ``Erad`` is the *specific* radiation energy (per mass), so the
-    radiation-pressure term ``(u_rad/3)/ρ`` is just ``Erad/3``.  ``B < 0`` is
+    radiation-pressure term ``(4u_rad/3)/ρ`` is just ``4Erad/3``.  ``B < 0`` is
     gravitationally bound, ``B > 0`` is unbound.
 
     :param snap: A loaded :class:`richio.data.Snapshot`.
@@ -55,7 +55,7 @@ def bernoulli(snap, *, m_bh=1e4, m_star=0.5, r_star=0.47,
 
     phi = -m_bh / r                                     # G = 1
     kinetic = 0.5 * v2
-    thermal = cu("internal_energy") + cu("pressure") / cu("density") + cu("radiation_energy") / 3.0
+    thermal = cu("internal_energy") + cu("pressure") / cu("density") + cu("radiation_energy") * 4.0 / 3.0
     bern = phi + kinetic + thermal                      # code specific energy
 
     if normalize:
