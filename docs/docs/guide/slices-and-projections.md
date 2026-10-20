@@ -56,6 +56,52 @@ viewing axis. With `plane=None` (the default) it adds up along z. Projection
 queries and integrates bounded slabs one at a time, so it does not keep a full
 3-D index cube and a full 3-D field cube in memory.
 
+## Photospheres along adaptive rays
+
+[`richio.analysis.find_photosphere`](../api/analysis.md) locates the first
+optical-depth crossing along a straight ray. It uses the full simulation box
+and native nearest-cell values, independently of any plotting or projection grid:
+
+```python
+import numpy as np
+import unyt as u
+import richio
+
+snap = richio.load("snap_0042.h5")
+coordinates = u.unyt_array([snap.X, snap.Y, snap.Z]).T
+alpha = richio.opacity.rosseland_alpha(snap.T, snap.rho)
+points = u.unyt_array([[20, 0, 0], [30, 0, 0]], "Rsun")
+result = richio.analysis.find_photosphere(
+    coordinates, alpha, snap.volume, snap.box, points,
+    direction=[1, 0, -1],
+)
+print(result["position"][result["found"]])
+```
+
+Each point defines a line through the box. `direction` is the **inward travel
+direction**, normalized internally; it can be any nonzero 3-D vector, or one
+vector per point. For an observer above the box, use `[0, 0, -1]`. The ray
+starts at its box-entry point and stops at the first accumulated `target_tau`
+(default `2/3`), or at the opposite box boundary. A ray with no crossing has
+`found=False` and a NaN photosphere position. Use the original snapshot's box
+and cells for the full domain; a clipped snapshot defines a smaller domain.
+
+The trial step is the smaller of `cell_fraction * volume**(1/3)` and
+`max_delta_tau / alpha`, with defaults `0.25` and `0.1`. It is also clipped to
+the ray endpoint. A smaller or more opaque cell at the trial endpoint triggers
+step reduction. Optical depth accumulates by endpoint trapezoids; the final
+crossing solves the integral of linear opacity inside that interval. This is
+adaptive sampling, not an exact traversal of native cell faces. `alpha` must
+have inverse-length units: the opacity helpers' `*_alpha` functions already
+include density. Material outside the simulation box is not included.
+
+For a complete integral between two specified points, use
+`richio.analysis.integrate_optical_depth`. Its default `max_delta_tau=None`
+retains cell-size-controlled sampling without taking a step for every 0.1 of
+optical depth in a very thick interior. Both functions accept a reusable
+SciPy KD tree; its numeric coordinates must use exactly the units and cell
+ordering of `coordinates`. Neither function creates a 3-D grid or writes files.
+
 ## Using CPU cores
 
 Slices and projections use eight threads for the nearest-neighbour query by

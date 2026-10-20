@@ -95,6 +95,7 @@ nav:
       - richio.config: api/config.md
       - richio.plots: api/plots.md
       - richio.opacity: api/opacity.md
+      - richio.analysis: api/analysis.md
       - richio.eos: api/eos.md
       - richio.render: api/render.md
       - richio.shockfinder: api/shockfinder.md

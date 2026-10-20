@@ -18,8 +18,8 @@ richio — I/O and analysis library for RICH TDE simulations.
 
 The top-level namespace re-exports everything from :mod:`richio.data` (the
 primary entry-point is :func:`richio.load`) and exposes the
-:mod:`richio.plots`, :mod:`richio.units`, :mod:`richio.opacity` and
-:mod:`richio.eos` sub-modules.
+:mod:`richio.plots`, :mod:`richio.units`, :mod:`richio.opacity`,
+:mod:`richio.analysis` and :mod:`richio.eos` sub-modules.
 
 Typical usage::
 
@@ -34,6 +34,7 @@ Typical usage::
 
 # These imports expose the established public modules.
 from richio import (
+    analysis,  # noqa: F401
     config,  # noqa: F401
     eos,  # noqa: F401
     opacity,  # noqa: F401
